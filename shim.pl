@@ -464,6 +464,7 @@ if ( @rdrports ) {
 &runcmd("ip netns exec $routerns iptables -t nat -A POSTROUTING -s $shimip -j SNAT --to $routerbrip");
 
 # hide from traceroutes
+&runcmd("ip netns exec $routerns iptables -t mangle -D PREROUTING -m ttl --ttl-gt 1  -j TTL --ttl-inc 2");
 &runcmd("ip netns exec $routerns iptables -t mangle -A PREROUTING -m ttl --ttl-gt 1  -j TTL --ttl-inc 2");
 
 # prevent dhcp clients from detecting a duplicate ip
