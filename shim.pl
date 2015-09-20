@@ -27,6 +27,7 @@ my $b;
 my $carveports;
 my @cmdout;
 my %dhcp;
+my $dhcpdpid;
 my @foundrouters;
 my $foundrouters;
 my @foundshimips;
@@ -37,8 +38,9 @@ my $help;
 my $i;
 my $ip;
 my $iptcmd;
+my $lockfile = '/tmp/shim.lock';
 my $netinfo;
-my $pid;
+my $pid = $$;
 my $rdrports;
 my @rdrports;
 my %rdrport;
@@ -129,11 +131,11 @@ if ( $? != 0 ) {
 	croak "you need to install brctl (bridge utilities)";
 }
 
-`ip netns add DELME >/dev/null 2>&1`;
+`ip netns add DELME-$pid >/dev/null 2>&1`;
 if ( $? != 0 ) {
 	croak "your kernel does not support namespaces";
 } else {
-	`ip netns del DELME >/dev/null 2>&1`;
+	`ip netns del DELME-$pid >/dev/null 2>&1`;
 }
 
 if ( $shimmac !~ m/^([0-9a-f]{2}(:|$)){6}$/i ) {
@@ -261,11 +263,17 @@ if ( grep( /active/, @cmdout ) ) {
 # HERE IS WHERE WE START WORKING
 #
 
-# reserve brips so we can fork and exit early
+
+# reserve brips so we can run parallel shims
+while( -f "$lockfile") {
+	sleep(1);
+}
+`touch "$lockfile"`;
 $shimbrip = &getnextip();
 &runcmd("ip address add dev tap0 ${shimbrip}/16");
 $routerbrip = &getnextip();
 &runcmd("ip address add dev tap0 ${routerbrip}/16");
+unlink("$lockfile");
 
 #fork && exit;
 
@@ -273,10 +281,13 @@ $routerbrip = &getnextip();
 # build shim ns
 #
 &runcmd("ip netns add $shimns");
-&runcmd("ip link add $shimif type veth peer name br${shimns}");
+# use temporary tap name to avoid collisions when executing shims in parallel
+# we will use the pid to make sure
+&runcmd("ip link add tap1-$pid type veth peer name br${shimns}");
 &runcmd("brctl addif br0 br${shimns}");
-&runcmd("ip link set $shimif netns $shimns");
+&runcmd("ip link set tap1-$pid netns $shimns");
 &runcmd("ip link set dev br${shimns} up");
+&runcmd("ip netns exec $shimns ip link set dev tap1-$pid name $shimif");
 &runcmd("ip netns exec $shimns ip link set dev $shimif up");
 &runcmd("ip netns exec $shimns ip link set dev $shimif address $shimmac");
 
@@ -306,7 +317,7 @@ qq(request subnet-mask, broadcast-address, routers, domain-name, domain-name-ser
 		# CHECK FOR BREAKAGE.  CHANGED PORTS
 `timeout 5 ip netns exec $shimns tshark -l -c 1 -T fields -E separator=";" -e bootp.option.domain_name_server -e bootp.option.domain_name -e bootp.option.ntp_server -e bootp.option.subnet_mask -e bootp.option.hostname -e bootp.option.netbios_over_tcpip_dd_name_server -e bootp.option.netbios_over_tcpip_name_server -e bootp.option.netbios_over_tcpip_node_type -e bootp.option.netbios_over_tcpip_scope -n -i tap1 -Y "bootp.dhcp == 1 and udp.srcport == 67 and udp.dstport == 68"  udp src port 67 and udp dst port 68 and ether dst $shimmac >$tsharklog 2>/dev/null &`;
 		sleep(2);
-		&runcmd("ip netns exec $shimns dhclient -cf /tmp/dhclient-${shimns}.conf $shimif");
+		&runcmd("ip netns exec $shimns dhclient -sf /root/shim-dhclient-script -cf /tmp/dhclient-${shimns}.conf $shimif");
 		sleep(1);
 		if ( -s "$tsharklog" < 20 ) {
 			unlink("$tsharklog");
@@ -341,13 +352,6 @@ qq(request subnet-mask, broadcast-address, routers, domain-name, domain-name-ser
 	&runcmd("ip netns exec $shimns ip addr add dev $shimif $shimip/$shimcidr");
 }
 
-if ( ( !$shimhostname ) and ( $dhcp{'hostname'} ) ) {
-	$shimhostname = $dhcp{'hostname'};
-} elsif ( ( !$shimhostname ) and ( !$dhcp{'hostname'} ) ) {
-	$shimhostname = $shimmac;
-	$shimhostname =~ s/://g;
-}
-
 if ( !$routerip ) {
 	&runcmd("ip netns exec $shimns ip route show");
 	@getrouters = `ip netns exec $shimns ip route show`;
@@ -380,10 +384,11 @@ if ( $routermac !~ m/^([0-9a-f]{2}(:|$)){6}$/i ) {
 $routerns = 'R' . $routermac;
 $routerns =~ s/://g;
 
-&runcmd("ip link add tap2 type veth peer name ln${shimns}");
+&runcmd("ip link add tap2-$pid type veth peer name ln${shimns}");
 &runcmd("brctl addif tap0 ln${shimns}");
-&runcmd("ip link set tap2 netns $shimns");
+&runcmd("ip link set tap2-$pid netns $shimns");
 &runcmd("ip link set dev ln${shimns} up");
+&runcmd("ip netns exec $shimns ip link set dev tap2-$pid name tap2");
 &runcmd("ip netns exec $shimns ip link set dev tap2 up");
 &runcmd("ip address del dev tap0 ${shimbrip}/16");
 &runcmd("ip netns exec $shimns ip address add dev tap2 ${shimbrip}/16");
@@ -394,10 +399,11 @@ if ( $? != 0 ) {
 	# build router ns
 	#
 	&runcmd("ip netns add $routerns");
-	&runcmd("ip link add $routerif type veth peer name br${routerns}");
+	&runcmd("ip link add tap1-$pid type veth peer name br${routerns}");
 	&runcmd("brctl addif br1 br${routerns}");
-	&runcmd("ip link set $routerif netns $routerns");
+	&runcmd("ip link set tap1-$pid netns $routerns");
 	&runcmd("ip link set dev br${routerns} up");
+	&runcmd("ip netns exec $routerns ip link set dev tap1-$pid name $routerif");
 	&runcmd("ip netns exec $routerns ip link set dev $routerif up");
 	&runcmd("ip netns exec $routerns ip link set dev $routerif address $routermac");
 
@@ -408,10 +414,11 @@ if ( $? != 0 ) {
 		&runcmd("ip netns exec $routerns ip link set dev $routerif address $routermac");
 	}
 	&runcmd("ip netns exec $routerns ip address add dev $routerif ${routerip}/${shimcidr}");
-	&runcmd("ip link add tap2 type veth peer name ln${routerns}");
+	&runcmd("ip link add tap2-$pid type veth peer name ln${routerns}");
 	&runcmd("brctl addif tap0 ln${routerns}");
 	&runcmd("ip link set dev ln${routerns} up");
-	&runcmd("ip link set tap2 netns $routerns");
+	&runcmd("ip link set tap2-$pid netns $routerns");
+	&runcmd("ip netns exec $routerns ip link set dev tap2-$pid name tap2");
 	&runcmd("ip netns exec $routerns ip link set dev tap2 up");
 }
 &runcmd("ip address del dev tap0 ${routerbrip}/16");
@@ -482,8 +489,6 @@ if (@rdrports) {
 &runcmd("ip netns exec $routerns arp -s $shimip $shimmac");
 
 if ( $dhcp{'dodhcp'} == 1 ) {
-
-	# TODO what if dhcp if relayed?
 	if ( -f "/etc/netns/$shimns/resolv.conf" ) {
 		unlink("/etc/netns/$shimns/resolv.conf");
 	}
@@ -501,7 +506,7 @@ if ( $dhcp{'dodhcp'} == 1 ) {
 	open( FD, '<', "/tmp/shimdhcpd-${routerns}.conf" );
 	$dhcp{'addhost'} = 1;
 	while (<FD>) {
-		if ( $_ =~ m/host $shimhostname / ) {
+		if ( $_ =~ m/fixed-address ${shimip}; / ) {
 			$dhcp{'addhost'} = 0;
 		}
 	}
@@ -552,9 +557,9 @@ if ( $dhcp{'dodhcp'} == 1 ) {
 		$routernsdhcppid = "/var/run/dhcpd-${routerns}.pid";
 		if ( -f "$routernsdhcppid" ) {
 			open( FD, '<', "$routernsdhcppid" );
-			$pid = (<FD>);
-			chomp $pid;
-			`kill $pid`;
+			$dhcpdpid = (<FD>);
+			chomp $dhcpdpid;
+			`kill $dhcpdpid`;
 			close(FD);
 			unlink "$routernsdhcppid";
 		}
@@ -583,6 +588,9 @@ if ( $dhcp{'dodhcp'} == 1 ) {
 	close(FD);
 }
 
+#
+# write environment file that can be consumed by bash
+#
 open( FD, '>', "/tmp/env-$shimns" );
 print FD qq(
 routerbrip=$routerbrip
@@ -607,6 +615,7 @@ foreach ( keys %dhcp ) {
 	}
 }
 close(FD);
+
 
 # This part takes the longest to run
 # add routes for each ip in lan on routerns.  this allows inter-lan connectivity
@@ -657,6 +666,7 @@ Usage: $0 --shimmac=shimmac			shimmac is required
 	[--carveports=<port,port-port>]		forward ports to shimbox, tcp and udp, from both namespaces
 	[--rdrports=<origport-newport>,<..>]	redirect ports to shimbox, tcp and udp, from both namespaces and translate destination port
 	[--showshims]				show shims
+	[--unshimall]				remove all shims
 
 NOTE: Disable NetworkManager and do not configure any interfaces.
 Here is what your /etc/network/interfaces should look like if you are running Kali:
@@ -777,7 +787,7 @@ sub removeshimroute() {
 sub unshimall() {
 	my @nslist;
 	my @brlist;
-	my $file;
+	my @files;
 	my @ipaddrshow;
 	my @iplist;
 
@@ -801,9 +811,9 @@ sub unshimall() {
 		}
 	}
 
-	$file = glob("/tmp/shimdhcpd-R*.conf");
-	if ( -f "$file" ) {
-		unlink("$file");
+	@files = glob("/tmp/shimdhcpd-R*.conf");
+	foreach (@files) {
+		unlink("$_");
 	}
 
 	@ipaddrshow = `ip address show 2>/dev/null`;

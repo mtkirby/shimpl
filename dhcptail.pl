@@ -15,6 +15,8 @@ my $ip;
 my $mac;
 my $vlan;
 my $pcap;
+my @shimlog;
+my $shimlog;
 
 `which tshark >/dev/null 2>&1`;
 if ( $? != 0 ) {
@@ -51,6 +53,14 @@ while ( defined( $tsharkraw = $filetail->read ) ) {
 
 	next if ( $seen{$mac}++ );
 	print qq(running /root/shim.pl --shimmac='$mac'\n);
-	`/root/shim.pl --shimmac='$mac'`;
-
+	unless ( my $pid = fork ) {
+#		@shimlog = `/root/shim.pl --shimmac='$mac' 2>&1`;
+#		open(FD,'>',"/tmp/shimlog-$mac");
+#		print FD @shimlog;
+#		close(FD);
+		$shimlog = '/tmp/shimlog-' . $mac;
+		$shimlog =~ s/://g;
+		exec("/root/shim.pl --shimmac='$mac' > $shimlog 2>&1");
+		exit 0;
+	}
 }
