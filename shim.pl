@@ -1,5 +1,5 @@
 #!/usr/bin/perl
-# 20150919 Kirby
+# 20150920 Kirby
 
 # LICENSE
 #
@@ -860,6 +860,7 @@ sub showshims() {
 		print "SHIMNS: $env\n";
 		print "ROUTERNS: $shim{$env}{'routerns'}\n";
 		print "HOSTNAME: $shim{$env}{'shimhostname'}\n" if ( $shim{$env}{'shimhostname'} );
+		print "HOSTNAME: $shim{$env}{'dhcphostname'}\n" if ( $shim{$env}{'dhcphostname'} );
 		print "OUTSIDE eth0/br0\n";
 		print "|\t" . 'br' . $shim{$env}{'shimns'} . '/tap1/' . $shim{$env}{'shimip'} . "\n";
 		print "|_\t" . 'ln' . $shim{$env}{'shimns'} . '/tap2/' . $shim{$env}{'shimbrip'} . "\n";
