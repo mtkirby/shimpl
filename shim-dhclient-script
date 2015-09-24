@@ -201,4 +201,6 @@ case "$reason" in
         ;;
 esac
 
+set 
+
 exit 0
