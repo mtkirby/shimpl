@@ -1,5 +1,5 @@
 #!/usr/bin/perl
-# 20150923 Kirby
+# 20151003 Kirby
 
 # LICENSE
 #
@@ -21,73 +21,60 @@ use strict;
 use Getopt::Long;
 use Carp;
 use diagnostics;
+use Net::Subnet;
 
+# TODO create persistent config files in /etc/shim
+# TODO move scripts to /bin
+# TODO option add iptables to existing shims
+
+my @a;
 my $a;
 my $b;
-my $carveports;
 my @cmdout;
 my %dhcp;
-my $dhcpdpid;
-my @dhclientout;
 my @foundrouters;
 my $foundrouters;
-my @foundshimips;
-my $foundshimips;
 my @getrouters;
 my @getshimips;
+my $guesscidr;
 my $help;
-my $i;
 my $ip;
-my $iptcmd;
 my $lockfile = '/tmp/shim.lock';
+my %my;
 my $netinfo;
 my $pid = $$;
-my $rdrports;
-my @rdrports;
 my %rdrport;
-my $routerbrip;
-my $routerif = 'tap1';
-my $routerip;
-my $routermac;
-my $routerns;
-my $routernsdhcppid;
-my $shimbrip;
-my $shimcidr;
-my @shimdns;
-my $shimdns;
-my $shimdomainname;
-my $shimhost;
-my $shimhostname;
-my $shimif = 'tap1';
-my $shimip;
+my %router;
+my %shim;
 my @shimips;
-my $shimmac;
-my $shimns;
-my @shimntp;
-my $shimntp;
-my $shimroutetable;
-my $shimsubnetmask;
 my $showshims;
+my $unshim;
 my $unshimall;
 my $val;
 my $var;
-my $vlan;
+
+$shim{'if'}   = 'tap1';
+$router{'if'} = 'tap1';
 
 GetOptions(
-	"routermac=s"      => \$routermac,
-	"routerip=s"       => \$routerip,
-	"shimmac=s"        => \$shimmac,
-	"shimip=s"         => \$shimip,
-	"shimcidr=s"       => \$shimcidr,
-	"shimhostname=s"   => \$shimhostname,
-	"shimdomainname=s" => \$shimdomainname,
-	"vlan=s"           => \$vlan,
-	"shimdns=s"        => \$shimdns,
-	"shimntp=s"        => \$shimntp,
-	"carveports=s"     => \$carveports,
-	"rdrports=s"       => \$rdrports,
+	"extif=s"          => \$my{'extif'},
+	"intif=s"          => \$my{'intif'},
+	"routermac=s"      => \$router{'mac'},
+	"routerip=s"       => \$router{'ip'},
+	"shimmac=s"        => \$shim{'mac'},
+	"shimip=s"         => \$shim{'ip'},
+	"shimcidr=s"       => \$shim{'cidr'},
+	"guesscidr"        => \$guesscidr,
+	"shimhostname=s"   => \$shim{'hostname'},
+	"shimdomainname=s" => \$shim{'domainname'},
+	"vlan=s"           => \$my{'vlan'},
+	"shimdns=s"        => \$shim{'dns'},
+	"shimntp=s"        => \$shim{'ntp'},
+	"carveports=s"     => \$my{'carveports'},
+	"rdrports=s"       => \$my{'rdrports'},
 	"showshims"        => \$showshims,
 	"unshimall"        => \$unshimall,
+	"unshim=s"         => \$unshim,
 	"help"             => \$help,
 );
 
@@ -106,8 +93,19 @@ if ($unshimall) {
 	exit 0;
 }
 
+if ($unshim) {
+	&unshim($unshim);
+	exit 0;
+}
+
 ##################################################
 # Check for apps, namespace support, and modules
+if ( $> != 0 ) {
+    croak "you must run as root";
+} else {
+    umask(0700);
+}
+
 `which dhclient >/dev/null 2>&1`;
 if ( $? != 0 ) {
 	croak "you need to install dhclient";
@@ -116,11 +114,6 @@ if ( $? != 0 ) {
 `which dhcpd >/dev/null 2>&1`;
 if ( $? != 0 ) {
 	croak "you need to install dhcpd";
-}
-
-`which timeout >/dev/null 2>&1`;
-if ( $? != 0 ) {
-	croak "you need to install timeout";
 }
 
 `which brctl >/dev/null 2>&1`;
@@ -135,86 +128,103 @@ if ( $? != 0 ) {
 	`ip netns del DELME-$pid >/dev/null 2>&1`;
 }
 
+unless ( $my{'extif'} ) {
+	$my{'extif'} = 'eth0';
+}
+`ip link show $my{'extif'}`;
+if ( $? != 0 ) {
+	croak "You do not have an $my{'extif'}";
+}
+
+unless ( $my{'intif'} ) {
+	$my{'intif'} = 'eth1';
+}
+`ip link show $my{'intif'}`;
+if ( $? != 0 ) {
+	croak "You do not have an $my{'intif'}";
+}
+
 &runcmd( 1, "modprobe br_netfilter" );
 &runcmd( 1, "modprobe arptable_filter" );
+
 ##################################################
 
 ##################################################
 # check parameters
-if ( $shimmac !~ m/^([0-9a-f]{2}(:|$)){6}$/i ) {
-	croak "bad shimmac $shimmac";
+if ( $shim{'mac'} !~ m/^([0-9a-f]{2}(:|$)){6}$/i ) {
+	croak "bad shimmac $shim{'mac'}";
 }
 
-if ( ($shimip) and ( $shimip !~ m/\d+\.\d+\.\d+\.\d+/ ) ) {
-	croak "bad shimip $shimip";
+if ( ( $shim{'ip'} ) and ( $shim{'ip'} !~ m/\d+\.\d+\.\d+\.\d+/ ) ) {
+	croak "bad shimip $shim{'ip'}";
 }
-if ( ($routermac) and ( $routermac !~ m/^([0-9a-f]{2}(:|$)){6}$/i ) ) {
-	croak "bad routermac $routermac";
-}
-
-if ( ($routerip) and ( $routerip !~ m/\d+\.\d+\.\d+\.\d+/ ) ) {
-	croak "bad routerip $routerip";
+if ( ( $router{'mac'} ) and ( $router{'mac'} !~ m/^([0-9a-f]{2}(:|$)){6}$/i ) ) {
+	croak "bad routermac $router{'mac'}";
 }
 
-if ( ($shimcidr) and ( $shimcidr !~ m/^\d+$/ ) ) {
-	croak "bad shimcidr $shimcidr";
-}
-if ($shimcidr) {
-	$netinfo        = new Net::Netmask("169.254.0.1/${shimcidr}");
-	$shimsubnetmask = $netinfo->mask();
+if ( ( $router{'ip'} ) and ( $router{'ip'} !~ m/\d+\.\d+\.\d+\.\d+/ ) ) {
+	croak "bad routerip $router{'ip'}";
 }
 
-if ($shimdns) {
-	@shimdns = split( /,/, $shimdns );
-	foreach (@shimdns) {
+if ( ( $shim{'cidr'} ) and ( $shim{'cidr'} !~ m/^\d+$/ ) ) {
+	croak "bad shimcidr $shim{'cidr'}";
+}
+if ( $shim{'cidr'} ) {
+	$netinfo = new Net::Netmask("1.1.1.1/$shim{'cidr'}");
+	$shim{'subnetmask'} = $netinfo->mask();
+}
+
+if ( $shim{'dns'} ) {
+	@{ $shim{'a_dns'} } = split( /,/, $shim{'dns'} );
+	foreach ( @{ $shim{'a_dns'} } ) {
 		if ( $_ !~ m/^\d+\.\d+\.\d+\.\d+$/ ) {
 			croak "bad shimdns $_";
 		}
 	}
 }
 
-if ($shimntp) {
-	@shimntp = split( /,/, $shimntp );
-	foreach (@shimntp) {
+if ( $shim{'ntp'} ) {
+	@{ $shim{'a_ntp'} } = split( /,/, $shim{'ntp'} );
+	foreach ( @{ $shim{'a_ntp'} } ) {
 		if ( $_ !~ m/^\d+\.\d+\.\d+\.\d+$/ ) {
 			croak "bad shimntp $_";
 		}
 	}
 }
 
-if ($shimip) {
+if ( $shim{'ip'} ) {
 	$dhcp{'dodhcp'} = 0;
-	if ( !$routerip ) {
+	if ( !$router{'ip'} ) {
 		croak "must defined routerip if shimip is specified (dhcp disabled)";
 	}
-	if ( !$routermac ) {
-		croak "must defined routermac if shimip is specified (dhcp disabled)";
-	}
-	if ( !$shimcidr ) {
-		croak "must defined shimcidr if shimip is specified (dhcp disabled)";
+	if ( !$shim{'cidr'} ) {
+		$guesscidr = 1;
 	}
 } else {
 	$dhcp{'dodhcp'} = 1;
 }
 
-if ( ($vlan) and ( $vlan !~ m/^\d+$/ ) ) {
-	croak "bad vlan id $vlan";
+if ($guesscidr) {
+	$shim{'cidr'} = &guesscidr( $shim{'ip'}, $router{'ip'} );
 }
 
-if ($carveports) {
-	$carveports =~ s/-/:/g;
-	$carveports =~ s/\s+//g;
+if ( ( $my{'vlan'} ) and ( $my{'vlan'} !~ m/^\d+$/ ) ) {
+	croak "bad vlan id $my{'vlan'}";
+}
+
+if ( $my{'carveports'} ) {
+	$my{'carveports'} =~ s/-/:/g;
+	$my{'carveports'} =~ s/\s+//g;
 	if ( $_ !~ m/\d+/ ) {
-            croak "bad carveports";
-        }
+		croak "bad carveports";
+	}
 }
 
-if ($rdrports) {
-	$rdrports =~ s/\s+//g;
-	@rdrports = split( /,/, $rdrports );
-	foreach (@rdrports) {
+if ( $my{'rdrports'} ) {
+	$my{'rdrports'} =~ s/\s+//g;
+	foreach ( split( /,/, $my{'rdrports'} ) ) {
 		if ( $_ !~ m/\d+-\d+/ ) {
-			croak "bad rdrports $rdrports";
+			croak "bad rdrports $my{'rdrports'}";
 		} else {
 			( $a, $b ) = split( /-/, $_ );
 			$rdrport{$a} = $b;
@@ -224,28 +234,28 @@ if ($rdrports) {
 
 ##################################################
 
-
-$shimns = 'S' . $shimmac;
-$shimns =~ s/://g;
-if ($routermac) {
-	$routerns = 'R' . $routermac;
-	$routerns =~ s/://g;
+$shim{'ns'} = 'S' . $shim{'mac'};
+$shim{'ns'} =~ s/://g;
+if ( $router{'mac'} ) {
+	$router{'ns'} = 'R' . $router{'mac'};
+	$router{'ns'} =~ s/://g;
 }
 
-`ip netns exec $shimns ip link list >/dev/null 2>&1`;
+`ip netns exec $shim{'ns'} ip link list >/dev/null 2>&1`;
 if ( $? == 0 ) {
-	croak "A shimns already exists for $shimmac";
+	croak "A shimns already exists for $shim{'mac'}";
 }
 
+#####
 # pre-flight check
 foreach ( 'br0', 'br1' ) {
 	@cmdout = `brctl show $_ 2>&1`;
 	next unless ( grep( /No such device/, @cmdout ) );
 	&runcmd( 1, "brctl addbr $_" );
 	if ( $_ eq 'br0' ) {
-		&runcmd( 1, "brctl addif $_ eth0" );
+		&runcmd( 1, "brctl addif $_ $my{'extif'}" );
 	} elsif ( $_ eq 'br1' ) {
-		&runcmd( 1, "brctl addif $_ eth1" );
+		&runcmd( 1, "brctl addif $_ $my{'intif'}" );
 	}
 	&runcmd( 1, "brctl stp $_ off" );
 	&runcmd( 1, "ip link set dev $_ up" );
@@ -264,7 +274,7 @@ if ( grep( /No such device/, @cmdout ) ) {
 if ( grep( /active/, @cmdout ) ) {
 	&runcmd( 0, "systemctl stop NetworkManager" );
 }
-
+#####
 
 #
 # HERE IS WHERE WE START WORKING
@@ -275,10 +285,10 @@ while ( -f "$lockfile" ) {
 	sleep(1);
 }
 `touch "$lockfile"`;
-$shimbrip = &getnextip();
-&runcmd( 1, "ip address add dev tap0 ${shimbrip}/16" );
-$routerbrip = &getnextip();
-&runcmd( 1, "ip address add dev tap0 ${routerbrip}/16" );
+$shim{'brip'} = &getnextip();
+&runcmd( 1, "ip address add dev tap0 ${shim{'brip'}}/16" );
+$router{'brip'} = &getnextip();
+&runcmd( 1, "ip address add dev tap0 $router{'brip'}/16" );
 unlink("$lockfile");
 
 # Your choice.  Safe to fork here.
@@ -287,50 +297,51 @@ unlink("$lockfile");
 #
 # build shim ns
 #
-&runcmd( 1, "ip netns add $shimns" );
+&runcmd( 1, "ip netns add $shim{'ns'}" );
 
 # use temporary tap name to avoid collisions when executing shims in parallel
 # we will use the pid to make sure
-# Not sure why br${shimns} returns 1 when it works fine on ln${shimns}.  Seems to work nonetheless
-&runcmd( 0, "ip link add tap1-$pid type veth peer name br${shimns}" );
-&runcmd( 1, "brctl addif br0 br${shimns}" );
-&runcmd( 1, "ip link set tap1-$pid netns $shimns" );
-&runcmd( 1, "ip link set dev br${shimns} up" );
-&runcmd( 1, "ip netns exec $shimns ip link set dev tap1-$pid name $shimif" );
-&runcmd( 1, "ip netns exec $shimns ip link set dev $shimif up" );
-&runcmd( 1, "ip netns exec $shimns ip link set dev $shimif address $shimmac" );
+# Not sure why br returns 1 when it works fine on ln.  Seems to work nonetheless
+$shim{'nsbr'} = 'br' . $shim{'ns'};
+$shim{'nsln'} = 'ln' . $shim{'ns'};
+&runcmd( 0, "ip link add tap1-$pid type veth peer name $shim{'nsbr'}" );
+&runcmd( 1, "brctl addif br0 $shim{'nsbr'}" );
+&runcmd( 1, "ip link set tap1-$pid netns $shim{'ns'}" );
+&runcmd( 1, "ip link set dev $shim{'nsbr'} up" );
+&runcmd( 1, "ip netns exec $shim{'ns'} ip link set dev tap1-$pid name $shim{'if'}" );
+&runcmd( 1, "ip netns exec $shim{'ns'} ip link set dev $shim{'if'} up" );
+&runcmd( 1, "ip netns exec $shim{'ns'} ip link set dev $shim{'if'} address $shim{'mac'}" );
 
-if ($vlan) {
-	&runcmd( 1, "ip link add link $shimif name $shimif type vlan id $vlan" );
-	$shimif .= ".$vlan";
-	&runcmd( 1, "ip link set $shimif netns $shimns" );
-	&runcmd( 1, "ip netns exec $shimns ip link set dev $shimif address $shimmac" );
+if ( $my{'vlan'} ) {
+	&runcmd( 1, "ip link add link $shim{'if'} name $shim{'if'} type vlan id $my{'vlan'}" );
+	$shim{'if'} .= ".$my{'vlan'}";
+	&runcmd( 1, "ip link set $shim{'if'} netns $shim{'ns'}" );
+	&runcmd( 1, "ip netns exec $shim{'ns'} ip link set dev $shim{'if'} address $shim{'mac'}" );
 }
 
 if ( $dhcp{'dodhcp'} == 1 ) {
-	open( FD, '>', "/tmp/dhclient-${shimns}.conf" );
+	open( FD, '>', "/tmp/dhclient-${shim{'ns'}}.conf" ) or croak "unable to write to /tmp/dhclient-${shim{'ns'}}.conf";
 	print FD qq(option rfc3442-classless-static-routes code 121 = array of unsigned integer 8;\n);
-	if ($shimhostname) {
-		print FD qq(send host-name = $shimhostname;\n);
+	if ( $shim{'hostname'} ) {
+		print FD qq(send host-name = $shim{'hostname'};\n);
 	}
-
-	print FD qq(request subnet-mask, broadcast-address, routers, domain-name, domain-name-servers, domain-search, host-name, netbios-name-servers, netbios-scope, netbios-dd-server, netbios-node-type, ntp-servers, bootp.option.dhcp_dns_domain_search_list_fqdn;\n);
+	print FD qq(request subnet-mask, broadcast-address, routers, domain-name, domain-name-servers, domain-search, host-name, netbios-name-servers, netbios-scope, netbios-dd-server, netbios-node-type, ntp-servers, rfc3442-classless-static-routes;\n);
 	close(FD);
 
 	$dhcp{'success'} = 0;
 	while ( $dhcp{'success'} == 0 ) {
 		print qq(Running dhclient\n);
+		print qq(Running ip netns exec $shim{'ns'} dhclient -sf /root/shim-dhclient-script -cf /tmp/dhclient-${shim{'ns'}}.conf $shim{'if'}\n);
 
 		# shim-dhclient-script is modified to output 'set' and we will grab the vals below
-		@dhclientout = `ip netns exec $shimns dhclient -sf /root/shim-dhclient-script -cf /tmp/dhclient-${shimns}.conf $shimif`;
-		if ( grep( /new_ip_address/, @dhclientout ) ) {
+		@a = `ip netns exec $shim{'ns'} dhclient -sf /root/shim-dhclient-script -cf /tmp/dhclient-${shim{'ns'}}.conf $shim{'if'}`;
+		if ( grep( /new_ip_address/, @a ) ) {
 			$dhcp{'success'} = 1;
 		}
 	}
-	foreach (@dhclientout) {
+	foreach (@a) {
 		chomp;
 		$_ =~ s/["']//g;
-		print qq(dhclient output: $_\n);
 		next unless ( $_ =~ m/=/ );
 		( $var, $val ) = split( /=/, $_ );
 
@@ -338,159 +349,152 @@ if ( $dhcp{'dodhcp'} == 1 ) {
 		@{ $dhcp{$var} } = split( /\s+/, $val );
 	}
 
-	@getshimips = `ip netns exec $shimns ip addr show dev $shimif`;
-	foreach (@getshimips) {
-		chomp;
-		@foundshimips = split( /\s+/, $_ );
-		if ( $foundshimips[1] eq "inet" ) {
-			( $shimip, $shimcidr ) = split( /\//, $foundshimips[2] );
-		}
+	if ( $dhcp{'new_ip_address'} ) {
+		$shim{'ip'} = $dhcp{'new_ip_address'}[0];
+	} else {
+		croak "unable to get IP from dhcp";
+	}
+
+	if ( $dhcp{'new_subnet_mask'} ) {
+		$netinfo         = new Net::Netmask("$shim{'ip'}/$dhcp{'new_subnet_mask'}[0]");
+		$shim{'netmask'} = $dhcp{'new_subnet_mask'}[0];
+		$shim{'cidr'}    = $netinfo->bits();
+	} else {
+		croak "unable to get CIDR from dhcp";
 	}
 } else {
-	&runcmd( 1, "ip netns exec $shimns ip addr add dev $shimif $shimip/$shimcidr" );
+	&runcmd( 1, "ip netns exec $shim{'ns'} ip addr add dev $shim{'if'} $shim{'ip'}/$shim{'cidr'}" );
 }
 
-if ( !$routerip ) {
-	&runcmd( 1, "ip netns exec $shimns ip route show" );
-	@getrouters = `ip netns exec $shimns ip route show`;
-	foreach (@getrouters) {
-		chomp;
-		@foundrouters = split( /\s+/, $_ );
-		if (    ( $foundrouters[0] eq "default" )
-			and ( $foundrouters[1] eq "via" ) )
-		{
-			$routerip = $foundrouters[2];
-		}
-	}
-	print qq(routerip is $routerip\n);
+if ( $router{'ip'} ) {
+	&runcmd( 1, "ip netns exec $shim{'ns'} ip route add default via $router{'ip'}" );
 } else {
-	&runcmd( 1, "ip netns exec $shimns ip route add default via $routerip" );
+	$router{'ip'} = $dhcp{'new_routers'}[0];
+    if ( $router{'ip'} !~ m/\d+\.\d+\.\d+\.\d+/ ) {
+    	croak "invalid routerip from dhcp: $router{'ip'}";
+    }
 }
-if ( $routerip !~ m/\d+\.\d+\.\d+\.\d+/ ) {
-	croak "invalid routerip $routerip";
-}
-if ( !$routermac ) {
-	&runcmd( 1, "ip netns exec $shimns arping -r -i $shimif -C1 $routerip" );
-	$routermac = `ip netns exec $shimns arping -r -i $shimif -C1 $routerip`;
-	chomp $routermac;
+if ( !$router{'mac'} ) {
+	&runcmd( 1, "ip netns exec $shim{'ns'} arping -r -i $shim{'if'} -C1 $router{'ip'}" );
+	$router{'mac'} = `ip netns exec $shim{'ns'} arping -r -i $shim{'if'} -C1 $router{'ip'}`;
+	chomp $router{'mac'};
+    if ( $router{'mac'} !~ m/^([0-9a-f]{2}(:|$)){6}$/i ) {
+	    croak "invlaid routermac: $router{'mac'}\n";
+    }
 } else {
-	&runcmd( 1, "ip netns exec $shimns arp -i $shimif -s $routerip $routermac" );
+	&runcmd( 1, "ip netns exec $shim{'ns'} arp -i $shim{'if'} -s $router{'ip'} $router{'mac'}" );
 }
-if ( $routermac !~ m/^([0-9a-f]{2}(:|$)){6}$/i ) {
-	print "BAD ROUTER MAC $routermac\n";
-	print "BAD ROUTER IP $routerip\n";
-	croak "Could not get mac for router";
-}
-$routerns = 'R' . $routermac;
-$routerns =~ s/://g;
+$router{'ns'} = 'R' . $router{'mac'};
+$router{'ns'} =~ s/://g;
 
-&runcmd( 1, "ip link add tap2-$pid type veth peer name ln${shimns}" );
-&runcmd( 1, "brctl addif tap0 ln${shimns}" );
-&runcmd( 1, "ip link set tap2-$pid netns $shimns" );
-&runcmd( 1, "ip link set dev ln${shimns} up" );
-&runcmd( 1, "ip netns exec $shimns ip link set dev tap2-$pid name tap2" );
-&runcmd( 1, "ip netns exec $shimns ip link set dev tap2 up" );
-&runcmd( 1, "ip address del dev tap0 ${shimbrip}/16" );
-&runcmd( 1, "ip netns exec $shimns ip address add dev tap2 ${shimbrip}/16" );
+&runcmd( 1, "ip link add tap2-$pid type veth peer name $shim{'nsln'}" );
+&runcmd( 1, "brctl addif tap0 $shim{'nsln'}" );
+&runcmd( 1, "ip link set tap2-$pid netns $shim{'ns'}" );
+&runcmd( 1, "ip link set dev $shim{'nsln'} up" );
+&runcmd( 1, "ip netns exec $shim{'ns'} ip link set dev tap2-$pid name tap2" );
+&runcmd( 1, "ip netns exec $shim{'ns'} ip link set dev tap2 up" );
+&runcmd( 1, "ip address del dev tap0 $shim{'brip'}/16" );
+&runcmd( 1, "ip netns exec $shim{'ns'} ip address add dev tap2 $shim{'brip'}/16" );
 
-`ip netns exec $routerns ip link list >/dev/null 2>&1`;
+`ip netns exec $router{'ns'} ip link list >/dev/null 2>&1`;
 if ( $? != 0 ) {
 	#
 	# build router ns
 	#
-	&runcmd( 1, "ip netns add $routerns" );
-	&runcmd( 0, "ip link add tap1-$pid type veth peer name br${routerns}" );
-	&runcmd( 1, "brctl addif br1 br${routerns}" );
-	&runcmd( 1, "ip link set tap1-$pid netns $routerns" );
-	&runcmd( 1, "ip link set dev br${routerns} up" );
-	&runcmd( 1, "ip netns exec $routerns ip link set dev tap1-$pid name $routerif" );
-	&runcmd( 1, "ip netns exec $routerns ip link set dev $routerif up" );
-	&runcmd( 1, "ip netns exec $routerns ip link set dev $routerif address $routermac" );
+	$router{'nsbr'} = 'br' . $router{'ns'};
+	$router{'nsln'} = 'ln' . $router{'ns'};
+	&runcmd( 1, "ip netns add $router{'ns'}" );
+	&runcmd( 0, "ip link add tap1-$pid type veth peer name $router{'nsbr'}" );
+	&runcmd( 1, "brctl addif br1 $router{'nsbr'}" );
+	&runcmd( 1, "ip link set tap1-$pid netns $router{'ns'}" );
+	&runcmd( 1, "ip link set dev $router{'nsbr'} up" );
+	&runcmd( 1, "ip netns exec $router{'ns'} ip link set dev tap1-$pid name $router{'if'}" );
+	&runcmd( 1, "ip netns exec $router{'ns'} ip link set dev $router{'if'} up" );
+	&runcmd( 1, "ip netns exec $router{'ns'} ip link set dev $router{'if'} address $router{'mac'}" );
 
-	if ($vlan) {
-		&runcmd( 1, "ip link add link $routerif name $routerif type vlan id $vlan" );
-		$routerif .= ".$vlan";
-		&runcmd( 1, "ip link set $routerif netns $routerns" );
-		&runcmd( 1, "ip netns exec $routerns ip link set dev $routerif address $routermac" );
+	if ( $my{'vlan'} ) {
+		&runcmd( 1, "ip link add link $router{'if'} name $router{'if'} type vlan id $my{'vlan'}" );
+		$router{'if'} .= ".$my{'vlan'}";
+		&runcmd( 1, "ip link set $router{'if'} netns $router{'ns'}" );
+		&runcmd( 1, "ip netns exec $router{'ns'} ip link set dev $router{'if'} address $router{'mac'}" );
 	}
-	&runcmd( 1, "ip netns exec $routerns ip address add dev $routerif ${routerip}/${shimcidr}" );
-	&runcmd( 1, "ip link add tap2-$pid type veth peer name ln${routerns}" );
-	&runcmd( 1, "brctl addif tap0 ln${routerns}" );
-	&runcmd( 1, "ip link set dev ln${routerns} up" );
-	&runcmd( 1, "ip link set tap2-$pid netns $routerns" );
-	&runcmd( 1, "ip netns exec $routerns ip link set dev tap2-$pid name tap2" );
-	&runcmd( 1, "ip netns exec $routerns ip link set dev tap2 up" );
+	&runcmd( 1, "ip netns exec $router{'ns'} ip address add dev $router{'if'} $router{'ip'}/$shim{'cidr'}" );
+	&runcmd( 1, "ip link add tap2-$pid type veth peer name $router{'nsln'}" );
+	&runcmd( 1, "brctl addif tap0 $router{'nsln'}" );
+	&runcmd( 1, "ip link set dev $router{'nsln'} up" );
+	&runcmd( 1, "ip link set tap2-$pid netns $router{'ns'}" );
+	&runcmd( 1, "ip netns exec $router{'ns'} ip link set dev tap2-$pid name tap2" );
+	&runcmd( 1, "ip netns exec $router{'ns'} ip link set dev tap2 up" );
 }
-&runcmd( 1, "ip address del dev tap0 ${routerbrip}/16" );
-&runcmd( 1, "ip netns exec $routerns ip address add dev tap2 ${routerbrip}/16" );
+&runcmd( 1, "ip address del dev tap0 $router{'brip'}/16" );
+&runcmd( 1, "ip netns exec $router{'ns'} ip address add dev tap2 $router{'brip'}/16" );
 
-$shimroutetable = &getroutetablename("$shimip");
+$shim{'routetable'} = &getroutetablename("$shim{'ip'}");
 
 # view routes via ip route show table <tablename>
-&removeshimroute( "$routerns", "$shimip", "$shimroutetable" );
-&runcmd( 0, "ip netns exec $routerns ip rule del table $shimroutetable" );
-&runcmd( 1, "ip netns exec $routerns ip rule add from $shimip lookup $shimroutetable" );
-&runcmd( 1, "ip netns exec $routerns ip route add default via $shimbrip table $shimroutetable" );
+&removeshimroute( "$router{'ns'}", "$shim{'ip'}", "$shim{'routetable'}" );
+&runcmd( 0, "ip netns exec $router{'ns'} ip rule del table $shim{'routetable'}" );
+&runcmd( 1, "ip netns exec $router{'ns'} ip rule add from $shim{'ip'} lookup $shim{'routetable'}" );
+&runcmd( 1, "ip netns exec $router{'ns'} ip route add default via $shim{'brip'} table $shim{'routetable'}" );
 
-if ($carveports) {
-	&runcmd( 1, "ip netns exec $shimns iptables -t nat -I PREROUTING -d $shimip -p tcp -m tcp -m multiport --dports $carveports -j DNAT --to-destination 169.254.0.1" );
-	&runcmd( 1, "ip netns exec $shimns iptables -t nat -I PREROUTING -d $shimip -p udp -m udp -m multiport --dports $carveports -j DNAT --to-destination 169.254.0.1" );
-	&runcmd( 1, "ip netns exec $shimns iptables -t nat -I POSTROUTING -d 169.254.0.1 -o tap2 -p tcp -m tcp -m multiport --dports $carveports -j SNAT --to-source $shimbrip" );
-	&runcmd( 1, "ip netns exec $shimns iptables -t nat -I POSTROUTING -d 169.254.0.1 -o tap2 -p udp -m udp -m multiport --dports $carveports -j SNAT --to-source $shimbrip" );
+if ( $my{'carveports'} ) {
+	&runcmd( 1, "ip netns exec $shim{'ns'} iptables -t nat -I PREROUTING -d $shim{'ip'} -p tcp -m tcp -m multiport --dports $my{'carveports'} -j DNAT --to-destination 169.254.0.1" );
+	&runcmd( 1, "ip netns exec $shim{'ns'} iptables -t nat -I PREROUTING -d $shim{'ip'} -p udp -m udp -m multiport --dports $my{'carveports'} -j DNAT --to-destination 169.254.0.1" );
+	&runcmd( 1, "ip netns exec $shim{'ns'} iptables -t nat -I POSTROUTING -d 169.254.0.1 -o tap2 -p tcp -m tcp -m multiport --dports $my{'carveports'} -j SNAT --to-source $shim{'brip'}" );
+	&runcmd( 1, "ip netns exec $shim{'ns'} iptables -t nat -I POSTROUTING -d 169.254.0.1 -o tap2 -p udp -m udp -m multiport --dports $my{'carveports'} -j SNAT --to-source $shim{'brip'}" );
 
-	&runcmd( 1, "ip netns exec $routerns iptables -t nat -I PREROUTING -s $shimip -d $routerip -p tcp -m tcp -m multiport --dports $carveports -j DNAT --to-destination 169.254.0.1" );
-	&runcmd( 1, "ip netns exec $routerns iptables -t nat -I PREROUTING -s $shimip -d $routerip -p udp -m udp -m multiport --dports $carveports -j DNAT --to-destination 169.254.0.1" );
-	&runcmd( 1, "ip netns exec $routerns iptables -t nat -I POSTROUTING -d 169.254.0.1 -o tap2 -p tcp -m tcp -m multiport --dports $carveports -j SNAT --to-source $routerbrip" );
-	&runcmd( 1, "ip netns exec $routerns iptables -t nat -I POSTROUTING -d 169.254.0.1 -o tap2 -p udp -m udp -m multiport --dports $carveports -j SNAT --to-source $routerbrip" );
+	&runcmd( 1, "ip netns exec $router{'ns'} iptables -t nat -I PREROUTING -s $shim{'ip'} -d $router{'ip'} -p tcp -m tcp -m multiport --dports $my{'carveports'} -j DNAT --to-destination 169.254.0.1" );
+	&runcmd( 1, "ip netns exec $router{'ns'} iptables -t nat -I PREROUTING -s $shim{'ip'} -d $router{'ip'} -p udp -m udp -m multiport --dports $my{'carveports'} -j DNAT --to-destination 169.254.0.1" );
+	&runcmd( 1, "ip netns exec $router{'ns'} iptables -t nat -I POSTROUTING -d 169.254.0.1 -o tap2 -p tcp -m tcp -m multiport --dports $my{'carveports'} -j SNAT --to-source $router{'brip'}" );
+	&runcmd( 1, "ip netns exec $router{'ns'} iptables -t nat -I POSTROUTING -d 169.254.0.1 -o tap2 -p udp -m udp -m multiport --dports $my{'carveports'} -j SNAT --to-source $router{'brip'}" );
 }
 
-if (@rdrports) {
+if ( $my{'rdrports'} ) {
 	foreach ( keys %rdrport ) {
-		&runcmd( 1, "ip netns exec $shimns iptables -t nat -I PREROUTING -d $shimip -p tcp -m tcp --dport $_ -j DNAT --to-destination 169.254.0.1:$rdrport{$_}" );
-		&runcmd( 1, "ip netns exec $shimns iptables -t nat -I PREROUTING -d $shimip -p udp -m udp --dport $_ -j DNAT --to-destination 169.254.0.1:$rdrport{$_}" );
-		&runcmd( 1, "ip netns exec $shimns iptables -t nat -I POSTROUTING -d 169.254.0.1 -o tap2 -p tcp -m tcp --dport $rdrport{$_} -j SNAT --to-source $shimbrip" );
-		&runcmd( 1, "ip netns exec $shimns iptables -t nat -I POSTROUTING -d 169.254.0.1 -o tap2 -p udp -m udp --dport $rdrport{$_} -j SNAT --to-source $shimbrip" );
+		&runcmd( 1, "ip netns exec $shim{'ns'} iptables -t nat -I PREROUTING -d $shim{'ip'} -p tcp -m tcp --dport $_ -j DNAT --to-destination 169.254.0.1:$rdrport{$_}" );
+		&runcmd( 1, "ip netns exec $shim{'ns'} iptables -t nat -I PREROUTING -d $shim{'ip'} -p udp -m udp --dport $_ -j DNAT --to-destination 169.254.0.1:$rdrport{$_}" );
+		&runcmd( 1, "ip netns exec $shim{'ns'} iptables -t nat -I POSTROUTING -d 169.254.0.1 -o tap2 -p tcp -m tcp --dport $rdrport{$_} -j SNAT --to-source $shim{'brip'}" );
+		&runcmd( 1, "ip netns exec $shim{'ns'} iptables -t nat -I POSTROUTING -d 169.254.0.1 -o tap2 -p udp -m udp --dport $rdrport{$_} -j SNAT --to-source $shim{'brip'}" );
 
-		&runcmd( 1, "ip netns exec $routerns iptables -t nat -I PREROUTING -s $shimip -p tcp -m tcp --dport $_ -j DNAT --to-destination 169.254.0.1:$rdrport{$_}" );
-		&runcmd( 1, "ip netns exec $routerns iptables -t nat -I PREROUTING -s $shimip -p udp -m udp --dport $_ -j DNAT --to-destination 169.254.0.1:$rdrport{$_}" );
-		&runcmd( 1, "ip netns exec $routerns iptables -t nat -I POSTROUTING -d 169.254.0.1 -o tap2 -p tcp -m tcp --dport $rdrport{$_} -j SNAT --to-source $routerbrip" );
-		&runcmd( 1, "ip netns exec $routerns iptables -t nat -I POSTROUTING -d 169.254.0.1 -o tap2 -p udp -m udp --dport $rdrport{$_} -j SNAT --to-source $routerbrip" );
+		&runcmd( 1, "ip netns exec $router{'ns'} iptables -t nat -I PREROUTING -s $shim{'ip'} -p tcp -m tcp --dport $_ -j DNAT --to-destination 169.254.0.1:$rdrport{$_}" );
+		&runcmd( 1, "ip netns exec $router{'ns'} iptables -t nat -I PREROUTING -s $shim{'ip'} -p udp -m udp --dport $_ -j DNAT --to-destination 169.254.0.1:$rdrport{$_}" );
+		&runcmd( 1, "ip netns exec $router{'ns'} iptables -t nat -I POSTROUTING -d 169.254.0.1 -o tap2 -p tcp -m tcp --dport $rdrport{$_} -j SNAT --to-source $router{'brip'}" );
+		&runcmd( 1, "ip netns exec $router{'ns'} iptables -t nat -I POSTROUTING -d 169.254.0.1 -o tap2 -p udp -m udp --dport $rdrport{$_} -j SNAT --to-source $router{'brip'}" );
 	}
 }
 
-&runcmd( 1, "ip netns exec $shimns iptables -t nat -A PREROUTING -d $shimip ! -p icmp -j DNAT --to-destination $routerbrip" );
-&runcmd( 1, "ip netns exec $shimns iptables -t nat -A PREROUTING -d $shimbrip ! -p icmp -j DNAT --to-destination $routerip" );
-&runcmd( 1, "ip netns exec $shimns iptables -t nat -A POSTROUTING -o $shimif ! -d 169.254.0.0/16 -j SNAT --to $shimip" );
+&runcmd( 1, "ip netns exec $shim{'ns'} iptables -t nat -A PREROUTING -d $shim{'ip'} ! -p icmp -j DNAT --to-destination $router{'brip'}" );
+&runcmd( 1, "ip netns exec $shim{'ns'} iptables -t nat -A PREROUTING -d $shim{'brip'} ! -p icmp -j DNAT --to-destination $router{'ip'}" );
+&runcmd( 1, "ip netns exec $shim{'ns'} iptables -t nat -A POSTROUTING -o $shim{'if'} ! -d 169.254.0.0/16 -j SNAT --to $shim{'ip'}" );
 
-&runcmd( 1, "ip netns exec $routerns iptables -t nat -A PREROUTING -d $routerip ! -p icmp -j DNAT --to-destination $shimbrip" );
-&runcmd( 1, "ip netns exec $routerns iptables -t nat -A PREROUTING -d $routerbrip ! -p icmp -j DNAT --to-destination $shimip" );
-&runcmd( 1, "ip netns exec $routerns iptables -t nat -A POSTROUTING -s $shimip -j SNAT --to $routerbrip" );
+&runcmd( 1, "ip netns exec $router{'ns'} iptables -t nat -A PREROUTING -d $router{'ip'} ! -p icmp -j DNAT --to-destination $shim{'brip'}" );
+&runcmd( 1, "ip netns exec $router{'ns'} iptables -t nat -A PREROUTING -d $router{'brip'} ! -p icmp -j DNAT --to-destination $shim{'ip'}" );
+&runcmd( 1, "ip netns exec $router{'ns'} iptables -t nat -A POSTROUTING -s $shim{'ip'} -j SNAT --to $router{'brip'}" );
 
 # hide from traceroutes
-&runcmd( 0, "ip netns exec $routerns iptables -t mangle -D PREROUTING -m ttl --ttl-gt 1  -j TTL --ttl-inc 2" );
-&runcmd( 1, "ip netns exec $routerns iptables -t mangle -A PREROUTING -m ttl --ttl-gt 1  -j TTL --ttl-inc 2" );
+&runcmd( 0, "ip netns exec $router{'ns'} iptables -t mangle -D PREROUTING -m ttl --ttl-gt 1  -j TTL --ttl-inc 2" );
+&runcmd( 1, "ip netns exec $router{'ns'} iptables -t mangle -A PREROUTING -m ttl --ttl-gt 1  -j TTL --ttl-inc 2" );
 
 # prevent dhcp clients from detecting a duplicate ip
-&runcmd( 1, "ip netns exec $routerns arptables -I INPUT -s $shimip -d $shimip -j DROP" );
+&runcmd( 1, "ip netns exec $router{'ns'} arptables -I INPUT -s $shim{'ip'} -d $shim{'ip'} -j DROP" );
 
 # safeguard
 # In the case that someone reverses the cables.
 # We don't want the shimbox to answer as the router on the outside interface.
-&runcmd( 0, "ip netns exec $routerns arptables -D INPUT -i $routerif -j DROP" );
-&runcmd( 1, "ip netns exec $routerns arptables -A INPUT -i $routerif -s $shimip -j ACCEPT" );
-&runcmd( 1, "ip netns exec $routerns arptables -A INPUT -i $routerif --source-mac $shimmac -j ACCEPT" );
-&runcmd( 1, "ip netns exec $routerns arptables -A INPUT -i $routerif -j DROP" );
+&runcmd( 0, "ip netns exec $router{'ns'} arptables -D INPUT -i $router{'if'} -j DROP" );
+&runcmd( 1, "ip netns exec $router{'ns'} arptables -A INPUT -i $router{'if'} -s $shim{'ip'} -j ACCEPT" );
+&runcmd( 1, "ip netns exec $router{'ns'} arptables -A INPUT -i $router{'if'} --source-mac $shim{'mac'} -j ACCEPT" );
+&runcmd( 1, "ip netns exec $router{'ns'} arptables -A INPUT -i $router{'if'} -j DROP" );
 
-&runcmd( 0, "ip netns exec $shimns arptables -D INPUT -i $shimif -j DROP" );
-&runcmd( 1, "ip netns exec $shimns arptables -A INPUT -i $shimif -d $shimip -j ACCEPT" );
-&runcmd( 1, "ip netns exec $shimns arptables -A INPUT -i $shimif --destination-mac $shimmac -j ACCEPT" );
-&runcmd( 1, "ip netns exec $shimns arptables -A INPUT -i $shimif -j DROP" );
+&runcmd( 1, "ip netns exec $shim{'ns'} arptables -A INPUT -i $shim{'if'} -d $shim{'ip'} -j ACCEPT" );
+&runcmd( 1, "ip netns exec $shim{'ns'} arptables -A INPUT -i $shim{'if'} --destination-mac $shim{'mac'} -j ACCEPT" );
+&runcmd( 1, "ip netns exec $shim{'ns'} arptables -A INPUT -i $shim{'if'} -j DROP" );
 
-&runcmd( 1, "ip netns exec $routerns arp -s $shimip $shimmac" );
+&runcmd( 1, "ip netns exec $router{'ns'} arp -s $shim{'ip'} $shim{'mac'}" );
 
 if ( $dhcp{'dodhcp'} == 1 ) {
-	unless ( -f "/tmp/shimdhcpd-${routerns}.conf" ) {
-		open( FD, '>', "/tmp/shimdhcpd-${routerns}.conf" );
+	unless ( -f "/tmp/shimdhcpd-${router{'ns'}}.conf" ) {
+		open( FD, '>', "/tmp/shimdhcpd-${router{'ns'}}.conf" ) or croak "unable to write /tmp/shimdhcpd-${router{'ns'}}.conf";
 		print FD qq(ddns-update-style none;\n);
 		print FD qq(default-lease-time 36000;\n);
 		print FD qq(max-lease-time 72000;\n);
@@ -499,80 +503,84 @@ if ( $dhcp{'dodhcp'} == 1 ) {
 		print FD qq(}\n);
 		close(FD);
 	}
-	open( FD, '<', "/tmp/shimdhcpd-${routerns}.conf" );
-	$dhcp{'addhost'} = 1;
+
+    @a = '';
+	open( FD, '+<', "/tmp/shimdhcpd-${router{'ns'}}.conf" ) or croak "unable to write /tmp/shimdhcpd-${router{'ns'}}.conf";
+	flock FD, 2;
 	while (<FD>) {
-		if ( $_ =~ m/fixed-address ${shimip}; / ) {
-			$dhcp{'addhost'} = 0;
-		}
+		next if ( $_ =~ m/$shim{'ns'}/ );
+		push( @a, $_ );
 	}
+	seek FD, 0, 0;
+	truncate "/tmp/shimdhcpd-${router{'ns'}}.conf", 0;
+	print FD @a;
+	print FD qq(include "/tmp/shimdhcpd-${shim{'ns'}}.conf";\n);
 	close(FD);
-	if ( $dhcp{'addhost'} == 1 ) {
-		open( FD, '>>', "/tmp/shimdhcpd-${routerns}.conf" );
-		print FD qq(host $shimns {\n);
-		print FD qq(	hardware ethernet $shimmac;\n);
-		print FD qq(	fixed-address $shimip;\n);
-		print FD qq(	option routers $routerip;\n);
-		if ($shimhostname) {
-			print FD qq(	option host-name "$shimhostname";\n);
-		} elsif ( $dhcp{'new_host_name'} ) {
-			print FD qq(	option host-name "${dhcp{'new_host_name'}[0]}";\n);
-		}
-		if ($shimdomainname) {
-			print FD qq(	option domain-name "$shimdomainname";\n);
-		} elsif ( $dhcp{'new_domain_name'} ) {
-			print FD qq(	option domain-name "${dhcp{'new_domain_name'}[0]}";\n);
-		}
-		if ( $dhcp{'new_subnet_mask'} ) {
-			print FD qq(	option subnet-mask ${dhcp{'new_subnet_mask'}[0]};\n);
-		}
-		if ( $dhcp{'new_domain_name_servers'} ) {
-			print FD qq(	option domain-name-servers ) . join( ', ', @{ $dhcp{'new_domain_name_servers'} } ) . qq(;\n);
-		}
-		if ( $dhcp{'new_ntp_servers'} ) {
-			print FD qq(	option ntp-servers ) . join( ', ', @{ $dhcp{'new_ntp_servers'} } ) . qq(;\n);
-		}
-		if ( $dhcp{'new_netbios_name_servers'} ) {
-			print FD qq(	option netbios-name-servers ) . join( ', ', @{ $dhcp{'new_netbios_name_servers'} } ) . qq(;\n);
-		}
-		if ( $dhcp{'new_netbios_node_type'} ) {
-			print FD qq(	option netbios-node-type ${dhcp{'new_netbios_node_type'}[0]};\n);
-		}
-		if ( $dhcp{'new_domain_search'} ) {
 
-			# so annoying
-			foreach ( @{ $dhcp{'new_domain_search'} } ) {
-				$_ =~ s/\.$//g;
-				push( @{ $dhcp{'my_domain_search'} }, $_ );
-			}
-			print FD qq(	option domain-search ") . join( ', ', @{ $dhcp{'my_domain_search'} } ) . qq(";\n);
-		}
-		print FD qq(}\n);
-		close(FD);
-
-		$routernsdhcppid = "/var/run/dhcpd-${routerns}.pid";
-		if ( -f "$routernsdhcppid" ) {
-			open( FD, '<', "$routernsdhcppid" );
-			$dhcpdpid = (<FD>);
-			chomp $dhcpdpid;
-			`kill $dhcpdpid`;
-			close(FD);
-			unlink "$routernsdhcppid";
-		}
-		`touch /var/lib/dhcp/dhcpd-${routerns}.leases`;
-		&runcmd( 1, "ip netns exec $routerns /usr/sbin/dhcpd -q -lf /var/lib/dhcp/dhcpd-${routerns}.leases -cf /tmp/shimdhcpd-${routerns}.conf -pf /var/run/dhcpd-${routerns}.pid $routerif" );
+	open( FD, '>', "/tmp/shimdhcpd-${shim{'ns'}}.conf" ) or croak "unable to write /tmp/shimdhcpd-${shim{'ns'}}.conf";
+	print FD qq(host $shim{'ns'} {\n);
+	print FD qq(	hardware ethernet $shim{'mac'};\n);
+	print FD qq(	fixed-address $shim{'ip'};\n);
+	print FD qq(	option routers $router{'ip'};\n);
+	if ( $shim{'hostname'} ) {
+		print FD qq(	option host-name "$shim{'hostname'}";\n);
+	} elsif ( $dhcp{'new_host_name'} ) {
+		print FD qq(	option host-name "${dhcp{'new_host_name'}[0]}";\n);
 	}
-
-	if ( -f "/etc/netns/$shimns/resolv.conf" ) {
-		unlink("/etc/netns/$shimns/resolv.conf");
-	}
-	mkdir( "/etc/netns",         0755 );
-	mkdir( "/etc/netns/$shimns", 0755 );
-	open( FD, '>', "/etc/netns/$shimns/resolv.conf" );
-	if ($shimdomainname) {
-		print FD qq(domain $shimdomainname\n);
+	if ( $shim{'domainname'} ) {
+		print FD qq(	option domain-name "$shim{'domainname'}";\n);
 	} elsif ( $dhcp{'new_domain_name'} ) {
-		print FD qq(domain $dhcp{'new_domain_name'}\n);
+		print FD qq(	option domain-name "${dhcp{'new_domain_name'}[0]}";\n);
+	}
+	if ( $dhcp{'new_subnet_mask'} ) {
+		print FD qq(	option subnet-mask ${dhcp{'new_subnet_mask'}[0]};\n);
+	}
+	if ( $dhcp{'new_domain_name_servers'} ) {
+		print FD qq(	option domain-name-servers ) . join( ', ', @{ $dhcp{'new_domain_name_servers'} } ) . qq(;\n);
+	}
+	if ( $dhcp{'new_ntp_servers'} ) {
+		print FD qq(	option ntp-servers ) . join( ', ', @{ $dhcp{'new_ntp_servers'} } ) . qq(;\n);
+	}
+	if ( $dhcp{'new_netbios_name_servers'} ) {
+		print FD qq(	option netbios-name-servers ) . join( ', ', @{ $dhcp{'new_netbios_name_servers'} } ) . qq(;\n);
+	}
+	if ( $dhcp{'new_netbios_node_type'} ) {
+		print FD qq(	option netbios-node-type ${dhcp{'new_netbios_node_type'}[0]};\n);
+	}
+	if ( $dhcp{'new_domain_search'} ) {
+
+		# so annoying
+		foreach ( @{ $dhcp{'new_domain_search'} } ) {
+			$_ =~ s/\.$//g;
+			push( @{ $dhcp{'my_domain_search'} }, $_ );
+		}
+		print FD qq(	option domain-search ") . join( ', ', @{ $dhcp{'my_domain_search'} } ) . qq(";\n);
+	}
+	print FD qq(}\n);
+	close(FD);
+
+	$router{'nsdhcppid'} = "/var/run/dhcpd-${router{'ns'}}.pid";
+	if ( -f "$router{'nsdhcppid'}" ) {
+		open( FD, '<', "$router{'nsdhcppid'}" );
+		$dhcp{'pid'} = (<FD>);
+		chomp $dhcp{'pid'};
+		`kill $dhcp{'pid'}`;
+		close(FD);
+		unlink "$router{'nsdhcppid'}";
+	}
+	`touch /var/lib/dhcp/dhcpd-${router{'ns'}}.leases`;
+	&runcmd( 1, "ip netns exec $router{'ns'} /usr/sbin/dhcpd -q -lf /var/lib/dhcp/dhcpd-${router{'ns'}}.leases -cf /tmp/shimdhcpd-${router{'ns'}}.conf -pf /var/run/dhcpd-${router{'ns'}}.pid $router{'if'}" );
+
+	if ( -f "/etc/netns/$shim{'ns'}/resolv.conf" ) {
+		unlink("/etc/netns/$shim{'ns'}/resolv.conf");
+	}
+	mkdir( "/etc/netns",             0755 );
+	mkdir( "/etc/netns/$shim{'ns'}", 0755 );
+	open( FD, '>', "/etc/netns/$shim{'ns'}/resolv.conf" ) or croak "unable to write /etc/netns/$shim{'ns'}/resolv.conf";
+	if ( $shim{'domainname'} ) {
+		print FD qq(domain $shim{'domainname'}\n);
+	} elsif ( $dhcp{'new_domain_name'} ) {
+		print FD qq(domain ${dhcp{'new_domain_name'}[0]}\n);
 	}
 	if ( $dhcp{'new_domain_name_servers'} ) {
 		foreach ( @{ $dhcp{'new_domain_name_servers'} } ) {
@@ -580,9 +588,7 @@ if ( $dhcp{'dodhcp'} == 1 ) {
 		}
 	}
 	if ( $dhcp{'new_domain_search'} ) {
-		foreach ( @{ $dhcp{'new_domain_search'} } ) {
-			print FD qq(nameserver $_\n);
-		}
+		print FD qq(search ) . join( ' ', @{ $dhcp{'new_domain_search'} } ) . qq(\n);
 	}
 	close(FD);
 }
@@ -590,26 +596,38 @@ if ( $dhcp{'dodhcp'} == 1 ) {
 #
 # write environment file that can be consumed by bash
 #
-open( FD, '>', "/tmp/env-$shimns" );
-print FD qq(
-routerbrip=$routerbrip
-routerip=$routerip
-routermac=$routermac
-routerns=$routerns
-shimbrip=$shimbrip
-shimip=$shimip
-shimmac=$shimmac
-shimns=$shimns
-);
-print FD qq(shimhostname=$shimhostname\n)     if ($shimhostname);
-print FD qq(shimdomainname=$shimdomainname\n) if ($shimdomainname);
-print FD 'shimdns=(' . join( ' ', @shimdns ) . ')' . qq("\n) if (@shimdns);
-print FD 'shimntp=(' . join( ' ', @shimntp ) . ')' . qq("\n) if (@shimntp);
+open( FD, '>', "/tmp/env-$shim{'ns'}" ) or croak "unable to write /tmp/env-$shim{'ns'}";
+foreach ( keys %shim ) {
+	next unless ( $shim{$_} );
+	if ( ref( $shim{$_} ) eq 'ARRAY' ) {
+		print FD 'shim' . $_ . '=(' . join( ' ', @{ $shim{$_} } ) . ')' . "\n";
+	} else {
+		print FD 'shim' . $_ . '=' . $shim{$_} . "\n";
+	}
+}
+
+foreach ( keys %router ) {
+	next unless ( $router{$_} );
+	if ( ref( $router{$_} ) eq 'ARRAY' ) {
+		print FD 'router' . $_ . '=(' . join( ' ', @{ $router{$_} } ) . ')' . "\n";
+	} else {
+		print FD 'router' . $_ . '=' . $router{$_} . "\n";
+	}
+}
+
+foreach ( keys %my ) {
+	next unless ( $my{$_} );
+	if ( ref( $my{$_} ) eq 'ARRAY' ) {
+		print FD 'my' . $_ . '=(' . join( ' ', @{ $my{$_} } ) . ')' . "\n";
+	} else {
+		print FD 'my' . $_ . '=' . $my{$_} . "\n";
+	}
+}
 
 foreach ( keys %dhcp ) {
-
+	next unless ( $dhcp{$_} );
 	if ( ref( $dhcp{$_} ) eq 'ARRAY' ) {
-		print FD 'dhcp' . $_ . '=(' . join( ' ', @{ $dhcp{$_} } ) . ')' . "\n";
+		print FD 'dhcp' . $_ . '=' . join( ' ', @{ $dhcp{$_} } ) . "\n";
 	} else {
 		print FD 'dhcp' . $_ . '=' . $dhcp{$_} . "\n";
 	}
@@ -618,19 +636,20 @@ close(FD);
 
 # This part takes the longest to run
 # add routes for each ip in lan on routerns.  this allows inter-lan connectivity
-&runcmd( 1, "ip netns exec $routerns sysctl -w net.ipv4.conf.tap1.proxy_arp=1" );
-$netinfo = new Net::Netmask("${shimip}/${shimcidr}");
+&runcmd( 1, "ip netns exec $router{'ns'} sysctl -w net.ipv4.conf.tap1.proxy_arp=1" );
+$netinfo = new Net::Netmask("$shim{'ip'}/$shim{'cidr'}");
 @shimips = &getallshimips();
-for $ip ( $netinfo->enumerate() ) {
+foreach $ip ( $netinfo->enumerate() ) {
 	next if ( grep( /^$ip$/, @shimips ) );
-	`ip netns exec $routerns ip route add $ip via $shimbrip table $shimroutetable >/dev/null 2>&1`;
+	`ip netns exec $router{'ns'} ip route add $ip via $shim{'brip'} table $shim{'routetable'} >/dev/null 2>&1`;
 }
 
 # remove this shimip from other route tables
 # we do this again in case of race condition
-&removeshimroute( "$routerns", "$shimip", "$shimroutetable" );
+&removeshimroute( "$router{'ns'}", "$shim{'ip'}", "$shim{'routetable'}" );
 
-#`ip netns exec $routerns ip route add 224.0.0.0/24 via $shimbrip >/dev/null 2>&1`;
+&runcmd( 1, "ip netns exec $router{'ns'} ip route add 224.0.0.0/24 via $shim{'brip'} table $shim{'routetable'}" );
+
 # TODO figure out multicast
 # mc_forwarding
 
@@ -643,8 +662,7 @@ sub runcmd() {
 	my @cmdout;
 	my $retval;
 
-	print qq(##########\n);
-	print qq(running $cmd\n);
+	print qq(## $cmd\n);
 	@cmdout = `$cmd`;
 	$retval = $?;
 	print qq(@cmdout);
@@ -656,6 +674,7 @@ sub runcmd() {
 
 }
 
+##################################################
 sub printhelp() {
 	print qq(
 Usage: $0 --shimmac=shimmac			shimmac is required
@@ -663,6 +682,7 @@ Usage: $0 --shimmac=shimmac			shimmac is required
 	[--routerip=<ip>]			override routerip on inside interface (required if static lan)
 	[--shimip=<ip>]				specify static shimip (disables dhcp)
 	[--shimcidr=<cidr>]			specify shimip cidr (required if static lan)
+	[--guesscidr]			    guess smallest cidr given route and shim IPs
 	[--shimhostname=<hostname>]		override shimhostname
 	[--vlan=<vlan id>]			specify vlan id
 	[--shimdns=<dns1,dns2,dns3>]		override dns dhcpd setting
@@ -670,7 +690,10 @@ Usage: $0 --shimmac=shimmac			shimmac is required
 	[--carveports=<port,port-port>]		forward ports to shimbox, tcp and udp, from both namespaces
 	[--rdrports=<origport-newport>,<..>]	redirect ports to shimbox, tcp and udp, from both namespaces and translate destination port
 	[--showshims]				show shims
+	[--unshim=shimnsname]				remove specific shim
 	[--unshimall]				remove all shims
+	[--extif]				external interface (facing router)
+	[--intif]				internal interface (facing pc/lan)
 
 NOTE: Disable NetworkManager and do not configure any interfaces.
 Here is what your /etc/network/interfaces should look like if you are running Kali:
@@ -685,6 +708,7 @@ iface eth1 inet manual
 	);
 }
 
+##################################################
 sub getnextip() {
 	my @nslist;
 	my $ns;
@@ -733,6 +757,7 @@ sub getnextip() {
 
 }
 
+##################################################
 sub getallshimips() {
 	my @nslist;
 	my $ns;
@@ -757,17 +782,14 @@ sub getallshimips() {
 	return (@shimips);
 }
 
+##################################################
 sub getroutetablename() {
 	my $ip = shift;
-	my @sip = split( /\./, $ip );
-	my $tablename;
-	$tablename = sprintf "%03d", "$sip[0]";
-	$tablename .= sprintf "%03d", "$sip[1]";
-	$tablename .= sprintf "%03d", "$sip[2]";
-	$tablename .= sprintf "%03d", "$sip[3]";
-	return ($tablename);
+
+	return ( unpack( "N", pack( "C4", split( /\./, $ip ) ) ) );
 }
 
+##################################################
 sub removeshimroute() {
 	my $namespace = shift;
 	my $shimip    = shift;
@@ -788,6 +810,67 @@ sub removeshimroute() {
 	}
 }
 
+##################################################
+sub unshim() {
+	my $shimns  = shift;
+	my $envfile = "/tmp/env-${shimns}";
+	my @t;
+	my $routerns;
+	my $routerbrip;
+	my $shimip;
+	my $shimroutetable;
+
+	if ( -f "$envfile" ) {
+		&runcmd( 0, "ip netns del $shimns" );
+		&runcmd( 0, "brctl delif br0 br${shimns}" );
+		&runcmd( 0, "ip link delete br${shimns} type veth" );
+		&runcmd( 0, "brctl delif br1 ln${shimns}" );
+		&runcmd( 0, "ip link delete ln${shimns} type veth" );
+		open( FD, '<', "$envfile" );
+		foreach (<FD>) {
+			chomp;
+			if ( $_ =~ /routerns=/ ) {
+				@t = split( /=/, $_ );
+				$routerns = $t[1];
+			}
+			if ( $_ =~ /routerbrip=/ ) {
+				@t = split( /=/, $_ );
+				$routerbrip = $t[1];
+			}
+			if ( $_ =~ /shimip=/ ) {
+				@t = split( /=/, $_ );
+				$shimip = $t[1];
+			}
+		}
+		close(FD);
+		if ( ($routerns) and ($routerbrip) ) {
+			&runcmd( 0, "ip netns exec $routerns ip address del dev tap2 ${routerbrip}/16" );
+		}
+		if ( ($routerns) and ($shimip) ) {
+			$shimroutetable = &getroutetablename("$shimip");
+			&runcmd( 0, "ip netns exec $routerns ip rule del table $shimroutetable" );
+		}
+		unlink("envfile");
+
+		open( FD, '+<', "/tmp/shimdhcpd-${routerns}.conf" ) or croak "unable to write /tmp/shimdhcpd-${routerns}.conf";
+		flock FD, 2;
+        @a = '';
+		while (<FD>) {
+			next if ( $_ =~ m/$shimns/ );
+			push( @a, $_ );
+		}
+		seek FD, 0, 0;
+		truncate "/tmp/shimdhcpd-${routerns}.conf", 0;
+		print FD @a;
+		close(FD);
+		unlink("/tmp/shimdhcpd-${shimns}.conf");
+	} else {
+		croak "No env file for $shimns";
+	}
+
+}
+
+##################################################
 sub unshimall() {
 	my @nslist;
 	my @brlist;
@@ -820,6 +903,11 @@ sub unshimall() {
 		unlink("$_");
 	}
 
+	@files = glob("/tmp/env-S*");
+	foreach (@files) {
+		unlink("$_");
+	}
+
 	@ipaddrshow = `ip address show 2>/dev/null`;
 	foreach (@ipaddrshow) {
 		@iplist = split( /\s+/, $_ );
@@ -832,6 +920,7 @@ sub unshimall() {
 	}
 }
 
+##################################################
 #SHIM NAME
 #OUTSIDE eth0/br0
 #|	brSmac/tap1/IP
@@ -866,8 +955,8 @@ sub showshims() {
 	foreach $env ( keys %shim ) {
 		print "SHIMNS: $env\n";
 		print "ROUTERNS: $shim{$env}{'routerns'}\n";
-		print "HOSTNAME: $shim{$env}{'shimhostname'}\n" if ( $shim{$env}{'shimhostname'} );
-		print "HOSTNAME: $shim{$env}{'dhcphostname'}\n" if ( $shim{$env}{'dhcphostname'} );
+		print "HOSTNAME: $shim{$env}{'shimhostname'}\n"      if ( $shim{$env}{'shimhostname'} );
+		print "HOSTNAME: $shim{$env}{'dhcpnew_host_name'}\n" if ( $shim{$env}{'dhcpnew_host_name'} );
 		print "OUTSIDE eth0/br0\n";
 		print "|\t" . 'br' . $shim{$env}{'shimns'} . '/tap1/' . $shim{$env}{'shimip'} . "\n";
 		print "|_\t" . 'ln' . $shim{$env}{'shimns'} . '/tap2/' . $shim{$env}{'shimbrip'} . "\n";
@@ -877,4 +966,23 @@ sub showshims() {
 		print "\t\t\t|_\tINSIDE eth1/br1\n";
 		print "\n";
 	}
+}
+
+##################################################
+sub guesscidr() {
+	my $shimip   = shift;
+	my $routerip = shift;
+	my $cidr     = '30';
+	my $matcher;
+
+	while ( $cidr >= 8 ) {
+		$matcher = subnet_matcher "${routerip}/$cidr";
+		if ( $matcher->($shimip) ) {
+			return $cidr;
+		}
+		$cidr--;
+	}
+
+	#should never reach here
+	return '24';
 }
