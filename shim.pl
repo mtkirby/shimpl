@@ -526,8 +526,8 @@ if ( $dhcp{'dodhcp'} == 1 ) {
 	unless ( -f "/tmp/shimdhcpd-${router{'ns'}}.conf" ) {
 		open( FD, '>', "/tmp/shimdhcpd-${router{'ns'}}.conf" ) or croak "unable to write /tmp/shimdhcpd-${router{'ns'}}.conf";
 		print FD qq(ddns-update-style none;\n);
-		print FD qq(default-lease-time 36000;\n);
-		print FD qq(max-lease-time 72000;\n);
+		print FD qq(default-lease-time 60;\n);
+		print FD qq(max-lease-time 90;\n);
 		print FD qq(log-facility local7;\n);
 		print FD qq(subnet 0.0.0.0 netmask 0.0.0.0 {\n);
 		print FD qq(}\n);
