@@ -1,5 +1,5 @@
 #!/usr/bin/perl
-# 20151003 Kirby
+# 20151010 Kirby
 
 # LICENSE
 #
@@ -22,6 +22,7 @@ use Getopt::Long;
 use Carp;
 use diagnostics;
 use Net::Subnet;
+no warnings 'portable';
 
 # TODO create persistent config files in /etc/shim
 # TODO move scripts to /bin
@@ -46,6 +47,8 @@ my $pid = $$;
 my %rdrport;
 my %router;
 my %shim;
+my $shimargs;
+my @shimargs;
 my @shimips;
 my $showshims;
 my $unshim;
@@ -55,6 +58,17 @@ my $var;
 
 $shim{'if'}   = 'tap1';
 $router{'if'} = 'tap1';
+
+foreach (@ARGV) {
+	($var,$val) = split(/=/, $_);
+	if ($val) {
+		$val =~ s/\s+//g;
+		push(@shimargs, qq($var=$val));
+	} else {
+		push(@shimargs, qq($var));
+	}
+}
+$shimargs = qq(@shimargs);
 
 GetOptions(
 	"extif=s"          => \$my{'extif'},
@@ -103,7 +117,7 @@ if ($unshim) {
 if ( $> != 0 ) {
     croak "you must run as root";
 } else {
-    umask(0700);
+    umask(0077);
 }
 
 `which dhclient >/dev/null 2>&1`;
@@ -232,7 +246,9 @@ if ( $my{'rdrports'} ) {
 	}
 }
 
+
 ##################################################
+
 
 $shim{'ns'} = 'S' . $shim{'mac'};
 $shim{'ns'} =~ s/://g;
@@ -240,6 +256,11 @@ if ( $router{'mac'} ) {
 	$router{'ns'} = 'R' . $router{'mac'};
 	$router{'ns'} =~ s/://g;
 }
+
+$a = $shim{'mac'};
+$a =~ s/://g;
+print qq(A IS $a\n);
+$shim{'routetable'} = hex($a);
 
 `ip netns exec $shim{'ns'} ip link list >/dev/null 2>&1`;
 if ( $? == 0 ) {
@@ -331,10 +352,11 @@ if ( $dhcp{'dodhcp'} == 1 ) {
 	$dhcp{'success'} = 0;
 	while ( $dhcp{'success'} == 0 ) {
 		print qq(Running dhclient\n);
-		print qq(Running ip netns exec $shim{'ns'} dhclient -sf /root/shim-dhclient-script -cf /tmp/dhclient-${shim{'ns'}}.conf $shim{'if'}\n);
+		print qq(Running ip netns exec $shim{'ns'} dhclient -e shimns=$shim{'ns'} -e shimargs="$shimargs" -sf /root/shim-dhclient-script -cf /tmp/dhclient-${shim{'ns'}}.conf $shim{'if'}\n);
 
+print qq(\n);
 		# shim-dhclient-script is modified to output 'set' and we will grab the vals below
-		@a = `ip netns exec $shim{'ns'} dhclient -sf /root/shim-dhclient-script -cf /tmp/dhclient-${shim{'ns'}}.conf $shim{'if'}`;
+		@a = `ip netns exec $shim{'ns'} dhclient -e shimns=$shim{'ns'} -e shimargs="$shimargs" -sf /root/shim-dhclient-script -cf /tmp/dhclient-${shim{'ns'}}.conf $shim{'if'}`;
 		if ( grep( /new_ip_address/, @a ) ) {
 			$dhcp{'success'} = 1;
 		}
@@ -361,6 +383,9 @@ if ( $dhcp{'dodhcp'} == 1 ) {
 		$shim{'cidr'}    = $netinfo->bits();
 	} else {
 		croak "unable to get CIDR from dhcp";
+	}
+	if ( $dhcp{'new_interface_mtu'} ) {
+		$shim{'mtu'} = $dhcp{'new_interface_mtu'}[0];
 	}
 } else {
 	&runcmd( 1, "ip netns exec $shim{'ns'} ip addr add dev $shim{'if'} $shim{'ip'}/$shim{'cidr'}" );
@@ -395,6 +420,9 @@ $router{'ns'} =~ s/://g;
 &runcmd( 1, "ip netns exec $shim{'ns'} ip link set dev tap2 up" );
 &runcmd( 1, "ip address del dev tap0 $shim{'brip'}/16" );
 &runcmd( 1, "ip netns exec $shim{'ns'} ip address add dev tap2 $shim{'brip'}/16" );
+if ( $shim{'mtu'} ) {
+	&runcmd( 0, "ip netns exec $shim{'ns'} ip link set dev tap2 mtu $shim{'mtu'}");
+}
 
 `ip netns exec $router{'ns'} ip link list >/dev/null 2>&1`;
 if ( $? != 0 ) {
@@ -425,11 +453,13 @@ if ( $? != 0 ) {
 	&runcmd( 1, "ip link set tap2-$pid netns $router{'ns'}" );
 	&runcmd( 1, "ip netns exec $router{'ns'} ip link set dev tap2-$pid name tap2" );
 	&runcmd( 1, "ip netns exec $router{'ns'} ip link set dev tap2 up" );
+	if ( $shim{'mtu'} ) {
+		&runcmd( 0, "ip netns exec $router{'ns'} ip link set dev tap2 mtu $shim{'mtu'}");
+	}
 }
 &runcmd( 1, "ip address del dev tap0 $router{'brip'}/16" );
 &runcmd( 1, "ip netns exec $router{'ns'} ip address add dev tap2 $router{'brip'}/16" );
 
-$shim{'routetable'} = &getroutetablename("$shim{'ip'}");
 
 # view routes via ip route show table <tablename>
 &removeshimroute( "$router{'ns'}", "$shim{'ip'}", "$shim{'routetable'}" );
@@ -783,13 +813,6 @@ sub getallshimips() {
 }
 
 ##################################################
-sub getroutetablename() {
-	my $ip = shift;
-
-	return ( unpack( "N", pack( "C4", split( /\./, $ip ) ) ) );
-}
-
-##################################################
 sub removeshimroute() {
 	my $namespace = shift;
 	my $shimip    = shift;
@@ -846,9 +869,8 @@ sub unshim() {
 		if ( ($routerns) and ($routerbrip) ) {
 			&runcmd( 0, "ip netns exec $routerns ip address del dev tap2 ${routerbrip}/16" );
 		}
-		if ( ($routerns) and ($shimip) ) {
-			$shimroutetable = &getroutetablename("$shimip");
-			&runcmd( 0, "ip netns exec $routerns ip rule del table $shimroutetable" );
+		if ( ($routerns) and ($shimip) and ($shim{'routetable'} ) ) {
+			&runcmd( 0, "ip netns exec $routerns ip rule del table $shim{'routetable'}" );
 		}
 		unlink("envfile");
 

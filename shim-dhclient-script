@@ -21,16 +21,12 @@ case "$reason" in
         ;;
 
     BOUND|RENEW|REBIND|REBOOT)
-        if [ -n "$old_ip_address" ] && [ -n "$alias_ip_address" ] &&
-           [ "$alias_ip_address" != "$old_ip_address" ]; then
-            # alias IP may have changed => flush it
-            ip -4 addr flush dev ${interface} label ${interface}:0
-        fi
-
         if [ -n "$old_ip_address" ] &&
            [ "$old_ip_address" != "$new_ip_address" ]; then
-            # leased IP has changed => flush it
-            ip -4 addr flush dev ${interface} label ${interface}
+			/root/shim.pl --unshim=$shimns
+			eval /root/shim.pl $shimargs
+			kill $pid
+			exit 0
         fi
 
         if [ -z "$old_ip_address" ] ||
@@ -92,7 +88,10 @@ case "$reason" in
 
         if [ -n "$old_ip_address" ]; then
             # flush leased IP
-            ip -4 addr flush dev ${interface} label ${interface}
+			/root/shim.pl --unshim=$shimns
+			eval /root/shim.pl $shimargs
+			kill $pid
+			exit 0
         fi
 
         if [ -n "$alias_ip_address" ]; then
@@ -107,7 +106,10 @@ case "$reason" in
     TIMEOUT)
         if [ -n "$alias_ip_address" ]; then
             # flush alias IP
-            ip -4 addr flush dev ${interface} label ${interface}:0
+			/root/shim.pl --unshim=$shimns
+			eval /root/shim.pl $shimargs
+			kill $pid
+			exit 0
         fi
 
         # set IP from recorded lease
@@ -152,7 +154,9 @@ case "$reason" in
 
         else
             # flush all IPs from interface
-            ip -4 addr flush dev ${interface}
+			/root/shim.pl --unshim=$shimns
+			eval /root/shim.pl $shimargs
+			kill $pid
             exit 0
         fi
 
@@ -202,5 +206,7 @@ case "$reason" in
 esac
 
 set 
+set > /tmp/dhclient-set
+env > /tmp/dhclient-env
 
 exit 0
