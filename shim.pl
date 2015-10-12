@@ -1,5 +1,5 @@
 #!/usr/bin/perl
-# 20151010 Kirby
+# 20151011 Kirby
 
 # LICENSE
 #
@@ -40,7 +40,7 @@ my @getshimips;
 my $guesscidr;
 my $help;
 my $ip;
-my $lockfile = '/tmp/shim.lock';
+my $lockfile = '/var/run/shim.lock';
 my %my;
 my $netinfo;
 my $pid = $$;
@@ -145,7 +145,7 @@ if ( $? != 0 ) {
 unless ( $my{'extif'} ) {
 	$my{'extif'} = 'eth0';
 }
-`ip link show $my{'extif'}`;
+`ip link show dev $my{'extif'}`;
 if ( $? != 0 ) {
 	croak "You do not have an $my{'extif'}";
 }
@@ -153,7 +153,7 @@ if ( $? != 0 ) {
 unless ( $my{'intif'} ) {
 	$my{'intif'} = 'eth1';
 }
-`ip link show $my{'intif'}`;
+`ip link show dev $my{'intif'}`;
 if ( $? != 0 ) {
 	croak "You do not have an $my{'intif'}";
 }
@@ -259,7 +259,6 @@ if ( $router{'mac'} ) {
 
 $a = $shim{'mac'};
 $a =~ s/://g;
-print qq(A IS $a\n);
 $shim{'routetable'} = hex($a);
 
 `ip netns exec $shim{'ns'} ip link list >/dev/null 2>&1`;
@@ -341,7 +340,7 @@ if ( $my{'vlan'} ) {
 }
 
 if ( $dhcp{'dodhcp'} == 1 ) {
-	open( FD, '>', "/tmp/dhclient-${shim{'ns'}}.conf" ) or croak "unable to write to /tmp/dhclient-${shim{'ns'}}.conf";
+	open( FD, '>', "/var/run/dhclient-${shim{'ns'}}.conf" ) or croak "unable to write to /var/run/dhclient-${shim{'ns'}}.conf";
 	print FD qq(option rfc3442-classless-static-routes code 121 = array of unsigned integer 8;\n);
 	if ( $shim{'hostname'} ) {
 		print FD qq(send host-name = $shim{'hostname'};\n);
@@ -352,11 +351,11 @@ if ( $dhcp{'dodhcp'} == 1 ) {
 	$dhcp{'success'} = 0;
 	while ( $dhcp{'success'} == 0 ) {
 		print qq(Running dhclient\n);
-		print qq(Running ip netns exec $shim{'ns'} dhclient -e shimns=$shim{'ns'} -e shimargs="$shimargs" -sf /root/shim-dhclient-script -cf /tmp/dhclient-${shim{'ns'}}.conf $shim{'if'}\n);
+		print qq(Running ip netns exec $shim{'ns'} dhclient -e shimns=$shim{'ns'} -e shimargs="$shimargs" -sf /root/shim-dhclient-script -cf /var/run/dhclient-${shim{'ns'}}.conf $shim{'if'}\n);
 
 print qq(\n);
 		# shim-dhclient-script is modified to output 'set' and we will grab the vals below
-		@a = `ip netns exec $shim{'ns'} dhclient -e shimns=$shim{'ns'} -e shimargs="$shimargs" -sf /root/shim-dhclient-script -cf /tmp/dhclient-${shim{'ns'}}.conf $shim{'if'}`;
+		@a = `ip netns exec $shim{'ns'} dhclient -e shimns=$shim{'ns'} -e shimargs="$shimargs" -sf /root/shim-dhclient-script -cf /var/run/dhclient-${shim{'ns'}}.conf $shim{'if'}`;
 		if ( grep( /new_ip_address/, @a ) ) {
 			$dhcp{'success'} = 1;
 		}
@@ -523,8 +522,8 @@ if ( $my{'rdrports'} ) {
 &runcmd( 1, "ip netns exec $router{'ns'} arp -s $shim{'ip'} $shim{'mac'}" );
 
 if ( $dhcp{'dodhcp'} == 1 ) {
-	unless ( -f "/tmp/shimdhcpd-${router{'ns'}}.conf" ) {
-		open( FD, '>', "/tmp/shimdhcpd-${router{'ns'}}.conf" ) or croak "unable to write /tmp/shimdhcpd-${router{'ns'}}.conf";
+	unless ( -f "/var/run/shimdhcpd-${router{'ns'}}.conf" ) {
+		open( FD, '>', "/var/run/shimdhcpd-${router{'ns'}}.conf" ) or croak "unable to write /var/run/shimdhcpd-${router{'ns'}}.conf";
 		print FD qq(ddns-update-style none;\n);
 		print FD qq(default-lease-time 60;\n);
 		print FD qq(max-lease-time 90;\n);
@@ -535,19 +534,19 @@ if ( $dhcp{'dodhcp'} == 1 ) {
 	}
 
     @a = '';
-	open( FD, '+<', "/tmp/shimdhcpd-${router{'ns'}}.conf" ) or croak "unable to write /tmp/shimdhcpd-${router{'ns'}}.conf";
+	open( FD, '+<', "/var/run/shimdhcpd-${router{'ns'}}.conf" ) or croak "unable to write /var/run/shimdhcpd-${router{'ns'}}.conf";
 	flock FD, 2;
 	while (<FD>) {
 		next if ( $_ =~ m/$shim{'ns'}/ );
 		push( @a, $_ );
 	}
 	seek FD, 0, 0;
-	truncate "/tmp/shimdhcpd-${router{'ns'}}.conf", 0;
+	truncate "/var/run/shimdhcpd-${router{'ns'}}.conf", 0;
 	print FD @a;
-	print FD qq(include "/tmp/shimdhcpd-${shim{'ns'}}.conf";\n);
+	print FD qq(include "/var/run/shimdhcpd-${shim{'ns'}}.conf";\n);
 	close(FD);
 
-	open( FD, '>', "/tmp/shimdhcpd-${shim{'ns'}}.conf" ) or croak "unable to write /tmp/shimdhcpd-${shim{'ns'}}.conf";
+	open( FD, '>', "/var/run/shimdhcpd-${shim{'ns'}}.conf" ) or croak "unable to write /var/run/shimdhcpd-${shim{'ns'}}.conf";
 	print FD qq(host $shim{'ns'} {\n);
 	print FD qq(	hardware ethernet $shim{'mac'};\n);
 	print FD qq(	fixed-address $shim{'ip'};\n);
@@ -599,7 +598,7 @@ if ( $dhcp{'dodhcp'} == 1 ) {
 		unlink "$router{'nsdhcppid'}";
 	}
 	`touch /var/lib/dhcp/dhcpd-${router{'ns'}}.leases`;
-	&runcmd( 1, "ip netns exec $router{'ns'} /usr/sbin/dhcpd -q -lf /var/lib/dhcp/dhcpd-${router{'ns'}}.leases -cf /tmp/shimdhcpd-${router{'ns'}}.conf -pf /var/run/dhcpd-${router{'ns'}}.pid $router{'if'}" );
+	&runcmd( 1, "ip netns exec $router{'ns'} /usr/sbin/dhcpd -q -lf /var/lib/dhcp/dhcpd-${router{'ns'}}.leases -cf /var/run/shimdhcpd-${router{'ns'}}.conf -pf /var/run/dhcpd-${router{'ns'}}.pid $router{'if'}" );
 
 	if ( -f "/etc/netns/$shim{'ns'}/resolv.conf" ) {
 		unlink("/etc/netns/$shim{'ns'}/resolv.conf");
@@ -626,7 +625,7 @@ if ( $dhcp{'dodhcp'} == 1 ) {
 #
 # write environment file that can be consumed by bash
 #
-open( FD, '>', "/tmp/env-$shim{'ns'}" ) or croak "unable to write /tmp/env-$shim{'ns'}";
+open( FD, '>', "/var/run/env-$shim{'ns'}" ) or croak "unable to write /var/run/env-$shim{'ns'}";
 foreach ( keys %shim ) {
 	next unless ( $shim{$_} );
 	if ( ref( $shim{$_} ) eq 'ARRAY' ) {
@@ -836,7 +835,7 @@ sub removeshimroute() {
 ##################################################
 sub unshim() {
 	my $shimns  = shift;
-	my $envfile = "/tmp/env-${shimns}";
+	my $envfile = "/var/run/env-${shimns}";
 	my @t;
 	my $routerns;
 	my $routerbrip;
@@ -874,7 +873,7 @@ sub unshim() {
 		}
 		unlink("envfile");
 
-		open( FD, '+<', "/tmp/shimdhcpd-${routerns}.conf" ) or croak "unable to write /tmp/shimdhcpd-${routerns}.conf";
+		open( FD, '+<', "/var/run/shimdhcpd-${routerns}.conf" ) or croak "unable to write /var/run/shimdhcpd-${routerns}.conf";
 		flock FD, 2;
         @a = '';
 		while (<FD>) {
@@ -882,10 +881,10 @@ sub unshim() {
 			push( @a, $_ );
 		}
 		seek FD, 0, 0;
-		truncate "/tmp/shimdhcpd-${routerns}.conf", 0;
+		truncate "/var/run/shimdhcpd-${routerns}.conf", 0;
 		print FD @a;
 		close(FD);
-		unlink("/tmp/shimdhcpd-${shimns}.conf");
+		unlink("/var/run/shimdhcpd-${shimns}.conf");
 	} else {
 		croak "No env file for $shimns";
 	}
@@ -920,12 +919,12 @@ sub unshimall() {
 		}
 	}
 
-	@files = glob("/tmp/shimdhcpd-R*.conf");
+	@files = glob("/var/run/shimdhcpd-R*.conf");
 	foreach (@files) {
 		unlink("$_");
 	}
 
-	@files = glob("/tmp/env-S*");
+	@files = glob("/var/run/env-S*");
 	foreach (@files) {
 		unlink("$_");
 	}
@@ -958,12 +957,12 @@ sub showshims() {
 	my $key;
 	my $val;
 	my $file;
-	my @envfiles = glob("/tmp/env-S*");
+	my @envfiles = glob("/var/run/env-S*");
 	my %shim;
 
 	foreach $file (@envfiles) {
 		$env = $file;
-		$env =~ s|/tmp/env-||g;
+		$env =~ s|/var/run/env-||g;
 		open( FD, '<', "$file" );
 		while (<FD>) {
 			chomp;
