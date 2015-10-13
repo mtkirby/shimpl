@@ -1,5 +1,5 @@
 #!/usr/bin/perl
-# 20151011 Kirby
+# 20151012 Kirby
 
 # LICENSE
 #
@@ -355,7 +355,7 @@ if ( $dhcp{'dodhcp'} == 1 ) {
 
 print qq(\n);
 		# shim-dhclient-script is modified to output 'set' and we will grab the vals below
-		@a = `ip netns exec $shim{'ns'} dhclient -e shimns=$shim{'ns'} -e shimargs="$shimargs" -sf /root/shim-dhclient-script -cf /var/run/dhclient-${shim{'ns'}}.conf $shim{'if'}`;
+		@a = `ip netns exec $shim{'ns'} dhclient -e shimns=$shim{'ns'} -e shimargs="$shimargs" -sf /root/shim-dhclient-script -cf /var/run/dhclient-${shim{'ns'}}.conf -lf /var/lib/dhcp/dhclient-${shim{'ns'}}.leases $shim{'if'}`;
 		if ( grep( /new_ip_address/, @a ) ) {
 			$dhcp{'success'} = 1;
 		}
@@ -841,13 +841,9 @@ sub unshim() {
 	my $routerbrip;
 	my $shimip;
 	my $shimroutetable;
+	my @pids;
 
 	if ( -f "$envfile" ) {
-		&runcmd( 0, "ip netns del $shimns" );
-		&runcmd( 0, "brctl delif br0 br${shimns}" );
-		&runcmd( 0, "ip link delete br${shimns} type veth" );
-		&runcmd( 0, "brctl delif br1 ln${shimns}" );
-		&runcmd( 0, "ip link delete ln${shimns} type veth" );
 		open( FD, '<', "$envfile" );
 		foreach (<FD>) {
 			chomp;
@@ -885,6 +881,28 @@ sub unshim() {
 		print FD @a;
 		close(FD);
 		unlink("/var/run/shimdhcpd-${shimns}.conf");
+
+		@pids = '';
+		@pids = `ip netns pids $routerns`;
+		if (@pids) {
+			foreach (@pids) {
+				chomp;
+				`kill -HUP $_`;
+			}
+		}
+		@pids = '';
+		@pids = `ip netns pids $shimns`;
+		if (@pids) {
+			foreach (@pids) {
+				chomp;
+				`kill $_`;
+			}
+		}
+		&runcmd( 0, "ip netns del $shimns" );
+		&runcmd( 0, "brctl delif br0 br${shimns}" );
+		&runcmd( 0, "ip link delete br${shimns} type veth" );
+		&runcmd( 0, "brctl delif br1 ln${shimns}" );
+		&runcmd( 0, "ip link delete ln${shimns} type veth" );
 	} else {
 		croak "No env file for $shimns";
 	}
@@ -898,10 +916,19 @@ sub unshimall() {
 	my @files;
 	my @ipaddrshow;
 	my @iplist;
+	my @pids;
 
 	@nslist = `ip netns list`;
 	foreach (@nslist) {
 		chomp;
+		@pids = '';
+		@pids = `ip netns pids $_`;
+		if (@pids) {
+			foreach (@pids) {
+				chomp;
+				`kill $_`;
+			}
+		}
 		&runcmd( 0, "ip netns del $_" );
 	}
 
