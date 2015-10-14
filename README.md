@@ -4,7 +4,7 @@ QUICK OVERVIEW/TL;DR
 1) This allows you to get past NAC (as long as you shim a trusted device)
 2) This allows you to MITM any host connecting through the shimbox
 3) This allows you to spoof as any device connected to the Eth1
-4) Everything is transparent
+4) Everything is transparent to the network
 
 The shimbox is a dual-nic device that plugs into the network between a pc and the switch or between a switch uplink port and the router.  The shimbox will spoof the IPs and MACs of the IPs on the LAN, and the router on it’s opposite interfaces.  It creates spoofed IPs/MACs of every device in the LAN on the shimbox’s outside interface and creates spoofed IPs/MACs of the router(s) on the shimbox’s inside interface. This allows the shimbox to share the same IP and MAC with all devices connected to it’s internal interface. The shimbox can then pivot through any of those LAN IPs to attack the network or to MITM attack the devices on the switch. A single device can also be shimmed with the use of a crossover cable. This is particularly useful on networks that have NAC (Network Access Control) where a rogue device is incapable of joining the network.
 
