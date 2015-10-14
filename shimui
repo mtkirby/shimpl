@@ -32,6 +32,7 @@ main_menu() {
     --title " Main Menu" \
     --menu "Menu" 15 50 0 \
     DHCPsniff "Start DHCPsniff and auto-shim" \
+    ViewDHCPsniff "Enter screen for dhcpsniff" \
     StopDHCPsniff "Stop DHCPsniff and stop auto-shim" \
     ShowShims "Show current shims" \
     MimicDevice "Mimic a shimmed device" \
@@ -57,6 +58,14 @@ stopdhcpsniff_menu() {
     /usr/bin/dialog --ascii-lines \
     --title "SUCCESS" \
     --msgbox "dhcptail has been killed" 0 0
+}
+
+view_dhcpsniff() {
+    /usr/bin/dialog --ascii-lines \
+    --title "" \
+    --msgbox "Will now launch screen -dr dhcptail\n\
+Press ctrl-a ctrl-d to exit" 0 0
+	screen -dr dhcptail
 }
 
 dhcpsniff_menu() {
@@ -117,6 +126,9 @@ while :; do
     case $(cat /tmp/shimui.out && rm /tmp/shimui.out >/dev/null 2>&1) in
         "DHCPsniff")
             dhcpsniff_menu
+            ;;
+        "ViewDHCPsniff")
+			view_dhcpsniff
             ;;
         "StopDHCPsniff")
             stopdhcpsniff_menu

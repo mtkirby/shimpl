@@ -60,10 +60,9 @@ while ( defined( $tsharkraw = $filetail->read ) ) {
 	}
 
 	croak "no mac" unless ($mac);
-	$args += " --shimmac='$mac' ";
-	$args += " --shimip='$ip' " if ($ip);
-	$args += " --shimhostname='$hostname' " if ($hostname);
-	$args += " --vlan='$vlan' " if ($vlan);
+	$args .= " --shimmac='$mac' ";
+	$args .= " --shimhostname='$hostname' " if ($hostname);
+	$args .= " --vlan='$vlan' " if ($vlan);
 	print qq(running /root/shim.pl $args\n);
 	unless ( my $pid = fork ) {
 		$shimlog = '/var/run/autoshimlog-' . $mac;
