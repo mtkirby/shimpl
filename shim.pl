@@ -1,5 +1,5 @@
 #!/usr/bin/perl
-# 20151012 Kirby
+# 20151013 Kirby
 
 # LICENSE
 #
@@ -37,7 +37,6 @@ my @foundrouters;
 my $foundrouters;
 my @getrouters;
 my @getshimips;
-my $guesscidr;
 my $help;
 my $ip;
 my $lockfile = '/var/run/shim.lock';
@@ -50,9 +49,6 @@ my %shim;
 my $shimargs;
 my @shimargs;
 my @shimips;
-my $showshims;
-my $unshim;
-my $unshimall;
 my $val;
 my $var;
 
@@ -60,36 +56,41 @@ $shim{'if'}   = 'tap1';
 $router{'if'} = 'tap1';
 
 foreach (@ARGV) {
-	($var,$val) = split(/=/, $_);
+	( $var, $val ) = split( /=/, $_ );
 	if ($val) {
 		$val =~ s/\s+//g;
-		push(@shimargs, qq($var=$val));
+		push( @shimargs, qq($var=$val) );
 	} else {
-		push(@shimargs, qq($var));
+		push( @shimargs, qq($var) );
 	}
 }
 $shimargs = qq(@shimargs);
 
+unless (@ARGV) {
+	$help = 1;
+}
+
 GetOptions(
-	"extif=s"          => \$my{'extif'},
-	"intif=s"          => \$my{'intif'},
-	"routermac=s"      => \$router{'mac'},
-	"routerip=s"       => \$router{'ip'},
-	"shimmac=s"        => \$shim{'mac'},
-	"shimip=s"         => \$shim{'ip'},
-	"shimcidr=s"       => \$shim{'cidr'},
-	"guesscidr"        => \$guesscidr,
-	"shimhostname=s"   => \$shim{'hostname'},
-	"shimdomainname=s" => \$shim{'domainname'},
-	"vlan=s"           => \$my{'vlan'},
-	"shimdns=s"        => \$shim{'dns'},
-	"shimntp=s"        => \$shim{'ntp'},
 	"carveports=s"     => \$my{'carveports'},
-	"rdrports=s"       => \$my{'rdrports'},
-	"showshims"        => \$showshims,
-	"unshimall"        => \$unshimall,
-	"unshim=s"         => \$unshim,
+	"extif=s"          => \$my{'extif'},
+	"guesscidr"        => \$my{'guesscidr'},
 	"help"             => \$help,
+	"intif=s"          => \$my{'intif'},
+	"mimic=s"          => \$my{'mimic'},
+	"rdrports=s"       => \$my{'rdrports'},
+	"routerip=s"       => \$router{'ip'},
+	"routermac=s"      => \$router{'mac'},
+	"shimcidr=s"       => \$shim{'cidr'},
+	"shimdns=s"        => \$shim{'dns'},
+	"shimdomainname=s" => \$shim{'domainname'},
+	"shimhostname=s"   => \$shim{'hostname'},
+	"shimip=s"         => \$shim{'ip'},
+	"shimmac=s"        => \$shim{'mac'},
+	"shimntp=s"        => \$shim{'ntp'},
+	"showshims"        => \$my{'showshims'},
+	"unshimall"        => \$my{'unshimall'},
+	"unshim=s"         => \$my{'unshim'},
+	"vlan=s"           => \$my{'vlan'},
 );
 
 if ($help) {
@@ -97,27 +98,32 @@ if ($help) {
 	exit 0;
 }
 
-if ($showshims) {
+if ( $my{'showshims'} ) {
 	&showshims();
 	exit 0;
 }
 
-if ($unshimall) {
+if ( $my{'unshimall'} ) {
 	&unshimall();
 	exit 0;
 }
 
-if ($unshim) {
-	&unshim($unshim);
+if ( $my{'unshim'} ) {
+	&unshim( $my{'unshim'} );
+	exit 0;
+}
+
+if ( $my{'mimic'} ) {
+	&mimic( $my{'mimic'} );
 	exit 0;
 }
 
 ##################################################
 # Check for apps, namespace support, and modules
 if ( $> != 0 ) {
-    croak "you must run as root";
+	croak "you must run as root";
 } else {
-    umask(0077);
+	umask(0077);
 }
 
 `which dhclient >/dev/null 2>&1`;
@@ -212,13 +218,13 @@ if ( $shim{'ip'} ) {
 		croak "must defined routerip if shimip is specified (dhcp disabled)";
 	}
 	if ( !$shim{'cidr'} ) {
-		$guesscidr = 1;
+		$my{'guesscidr'} = 1;
 	}
 } else {
 	$dhcp{'dodhcp'} = 1;
 }
 
-if ($guesscidr) {
+if ( $my{'guesscidr'} ) {
 	$shim{'cidr'} = &guesscidr( $shim{'ip'}, $router{'ip'} );
 }
 
@@ -246,9 +252,7 @@ if ( $my{'rdrports'} ) {
 	}
 }
 
-
 ##################################################
-
 
 $shim{'ns'} = 'S' . $shim{'mac'};
 $shim{'ns'} =~ s/://g;
@@ -353,7 +357,8 @@ if ( $dhcp{'dodhcp'} == 1 ) {
 		print qq(Running dhclient\n);
 		print qq(Running ip netns exec $shim{'ns'} dhclient -e shimns=$shim{'ns'} -e shimargs="$shimargs" -sf /root/shim-dhclient-script -cf /var/run/dhclient-${shim{'ns'}}.conf $shim{'if'}\n);
 
-print qq(\n);
+		print qq(\n);
+
 		# shim-dhclient-script is modified to output 'set' and we will grab the vals below
 		@a = `ip netns exec $shim{'ns'} dhclient -e shimns=$shim{'ns'} -e shimargs="$shimargs" -sf /root/shim-dhclient-script -cf /var/run/dhclient-${shim{'ns'}}.conf -lf /var/lib/dhcp/dhclient-${shim{'ns'}}.leases $shim{'if'}`;
 		if ( grep( /new_ip_address/, @a ) ) {
@@ -394,17 +399,17 @@ if ( $router{'ip'} ) {
 	&runcmd( 1, "ip netns exec $shim{'ns'} ip route add default via $router{'ip'}" );
 } else {
 	$router{'ip'} = $dhcp{'new_routers'}[0];
-    if ( $router{'ip'} !~ m/\d+\.\d+\.\d+\.\d+/ ) {
-    	croak "invalid routerip from dhcp: $router{'ip'}";
-    }
+	if ( $router{'ip'} !~ m/\d+\.\d+\.\d+\.\d+/ ) {
+		croak "invalid routerip from dhcp: $router{'ip'}";
+	}
 }
 if ( !$router{'mac'} ) {
 	&runcmd( 1, "ip netns exec $shim{'ns'} arping -r -i $shim{'if'} -C1 $router{'ip'}" );
 	$router{'mac'} = `ip netns exec $shim{'ns'} arping -r -i $shim{'if'} -C1 $router{'ip'}`;
 	chomp $router{'mac'};
-    if ( $router{'mac'} !~ m/^([0-9a-f]{2}(:|$)){6}$/i ) {
-	    croak "invlaid routermac: $router{'mac'}\n";
-    }
+	if ( $router{'mac'} !~ m/^([0-9a-f]{2}(:|$)){6}$/i ) {
+		croak "invlaid routermac: $router{'mac'}\n";
+	}
 } else {
 	&runcmd( 1, "ip netns exec $shim{'ns'} arp -i $shim{'if'} -s $router{'ip'} $router{'mac'}" );
 }
@@ -420,7 +425,7 @@ $router{'ns'} =~ s/://g;
 &runcmd( 1, "ip address del dev tap0 $shim{'brip'}/16" );
 &runcmd( 1, "ip netns exec $shim{'ns'} ip address add dev tap2 $shim{'brip'}/16" );
 if ( $shim{'mtu'} ) {
-	&runcmd( 0, "ip netns exec $shim{'ns'} ip link set dev tap2 mtu $shim{'mtu'}");
+	&runcmd( 0, "ip netns exec $shim{'ns'} ip link set dev tap2 mtu $shim{'mtu'}" );
 }
 
 `ip netns exec $router{'ns'} ip link list >/dev/null 2>&1`;
@@ -453,12 +458,11 @@ if ( $? != 0 ) {
 	&runcmd( 1, "ip netns exec $router{'ns'} ip link set dev tap2-$pid name tap2" );
 	&runcmd( 1, "ip netns exec $router{'ns'} ip link set dev tap2 up" );
 	if ( $shim{'mtu'} ) {
-		&runcmd( 0, "ip netns exec $router{'ns'} ip link set dev tap2 mtu $shim{'mtu'}");
+		&runcmd( 0, "ip netns exec $router{'ns'} ip link set dev tap2 mtu $shim{'mtu'}" );
 	}
 }
 &runcmd( 1, "ip address del dev tap0 $router{'brip'}/16" );
 &runcmd( 1, "ip netns exec $router{'ns'} ip address add dev tap2 $router{'brip'}/16" );
-
 
 # view routes via ip route show table <tablename>
 &removeshimroute( "$router{'ns'}", "$shim{'ip'}", "$shim{'routetable'}" );
@@ -533,7 +537,7 @@ if ( $dhcp{'dodhcp'} == 1 ) {
 		close(FD);
 	}
 
-    @a = '';
+	@a = '';
 	open( FD, '+<', "/var/run/shimdhcpd-${router{'ns'}}.conf" ) or croak "unable to write /var/run/shimdhcpd-${router{'ns'}}.conf";
 	flock FD, 2;
 	while (<FD>) {
@@ -707,22 +711,23 @@ sub runcmd() {
 sub printhelp() {
 	print qq(
 Usage: $0 --shimmac=shimmac			shimmac is required
-	[--routermac=<mac>]			override routermac on inside interface (required if static lan)
-	[--routerip=<ip>]			override routerip on inside interface (required if static lan)
-	[--shimip=<ip>]				specify static shimip (disables dhcp)
-	[--shimcidr=<cidr>]			specify shimip cidr (required if static lan)
-	[--guesscidr]			    guess smallest cidr given route and shim IPs
-	[--shimhostname=<hostname>]		override shimhostname
-	[--vlan=<vlan id>]			specify vlan id
-	[--shimdns=<dns1,dns2,dns3>]		override dns dhcpd setting
-	[--shimntp=<ntp1,ntp2,ntp3>]		override ntp dhcpd setting
 	[--carveports=<port,port-port>]		forward ports to shimbox, tcp and udp, from both namespaces
-	[--rdrports=<origport-newport>,<..>]	redirect ports to shimbox, tcp and udp, from both namespaces and translate destination port
-	[--showshims]				show shims
-	[--unshim=shimnsname]				remove specific shim
-	[--unshimall]				remove all shims
 	[--extif]				external interface (facing router)
+	[--guesscidr]			    guess smallest cidr given route and shim IPs
 	[--intif]				internal interface (facing pc/lan)
+	[--mimic=<shim id>]			change default route and resolv.conf of host
+	[--rdrports=<origport-newport>,<..>]	redirect ports to shimbox, tcp and udp, from both namespaces and translate destination port
+	[--routerip=<ip>]			override routerip on inside interface (required if static lan)
+	[--routermac=<mac>]			override routermac on inside interface (required if static lan)
+	[--shimcidr=<cidr>]			specify shimip cidr (required if static lan)
+	[--shimdns=<dns1,dns2,dns3>]		override dns dhcpd setting
+	[--shimhostname=<hostname>]		override shimhostname
+	[--shimip=<ip>]				specify static shimip (disables dhcp)
+	[--shimntp=<ntp1,ntp2,ntp3>]		override ntp dhcpd setting
+	[--showshims]				show shims
+	[--unshimall]				remove all shims
+	[--unshim=shimnsname]				remove specific shim
+	[--vlan=<vlan id>]			specify vlan id
 
 NOTE: Disable NetworkManager and do not configure any interfaces.
 Here is what your /etc/network/interfaces should look like if you are running Kali:
@@ -864,14 +869,14 @@ sub unshim() {
 		if ( ($routerns) and ($routerbrip) ) {
 			&runcmd( 0, "ip netns exec $routerns ip address del dev tap2 ${routerbrip}/16" );
 		}
-		if ( ($routerns) and ($shimip) and ($shim{'routetable'} ) ) {
+		if ( ($routerns) and ($shimip) and ( $shim{'routetable'} ) ) {
 			&runcmd( 0, "ip netns exec $routerns ip rule del table $shim{'routetable'}" );
 		}
 		unlink("envfile");
 
 		open( FD, '+<', "/var/run/shimdhcpd-${routerns}.conf" ) or croak "unable to write /var/run/shimdhcpd-${routerns}.conf";
 		flock FD, 2;
-        @a = '';
+		@a = '';
 		while (<FD>) {
 			next if ( $_ =~ m/$shimns/ );
 			push( @a, $_ );
@@ -903,6 +908,44 @@ sub unshim() {
 		&runcmd( 0, "ip link delete br${shimns} type veth" );
 		&runcmd( 0, "brctl delif br1 ln${shimns}" );
 		&runcmd( 0, "ip link delete ln${shimns} type veth" );
+	} else {
+		croak "No env file for $shimns";
+	}
+
+}
+
+##################################################
+sub mimic() {
+	my $shimns  = shift;
+	my $envfile = "/var/run/env-${shimns}";
+	my @t;
+	my $shimbrip;
+	my $resolvconf = '/etc/netns/' . $shimns . '/resolv.conf';
+
+	if ( -f "$envfile" ) {
+		open( FD, '<', "$envfile" );
+		foreach (<FD>) {
+			chomp;
+			if ( $_ =~ /shimbrip=/ ) {
+				@t = split( /=/, $_ );
+				$shimbrip = $t[1];
+			}
+		}
+		close(FD);
+		if ($shimbrip) {
+			&runcmd( 0, "ip route delete default" );
+			&runcmd( 1, "ip route add default via $shimbrip" );
+			if ( -f "$resolvconf" ) {
+				open( FD,  '<', "$resolvconf" )      or croak "unable to read $resolvconf: $!";
+				open( WFD, '>', "/etc/resolv.conf" ) or croak "unable to write /etc/resolv.conf: $!";
+				while (<FD>) {
+					print WFD $_;
+				}
+				close(FD);
+				close(WFD);
+			}
+			print qq(Success.  Now using $shimbrip as default gateway\n);
+		}
 	} else {
 		croak "No env file for $shimns";
 	}

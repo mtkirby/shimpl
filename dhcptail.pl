@@ -5,18 +5,19 @@ use File::Tail;
 use strict;
 use Carp;
 
-my $tsharklog = '/tmp/tshark-dhcpsniff';
+my $args;
+my @delmefiles;
 my $filetail;
-my $tsharkraw;
-my @tshark;
-my %seen;
 my $hostname;
 my $ip;
 my $mac;
-my $vlan;
-my $pcap;
+my %seen;
 my @shimlog;
 my $shimlog;
+my @tshark;
+my $tsharklog = '/var/run/tshark-dhcpsniff';
+my $tsharkraw;
+my $vlan;
 
 `which tshark >/dev/null 2>&1`;
 if ( $? != 0 ) {
@@ -40,27 +41,34 @@ while ( defined( $tsharkraw = $filetail->read ) ) {
 
 	$mac =~ s/,.+//g;
 
-	print qq(RECEIVED: $hostname $mac $ip $vlan\n);
+	print qq(dhcp request from $hostname $mac $ip $vlan\n);
 
 	if ( -s "$tsharklog" > 10240 ) {
 		print qq(clearing log\n);
 		open( FD, '>', "$tsharklog" );
 		print FD '';
 		close(FD);
-		$pcap = glob("/tmp/wireshark_pcapng_eth1_*");
-		unlink("$pcap");
+		@delmefiles = glob("/tmp/wireshark_pcapng_eth1_*");
+		foreach (@delmefiles) {
+			unlink("$_");
+		}
 	}
 
-	next if ( $seen{$mac}++ );
-	print qq(running /root/shim.pl --shimmac='$mac'\n);
+	if ( $seen{$mac}++ ) {
+		print qq(already shimmed $mac $ip\n);
+		next;
+	}
+
+	croak "no mac" unless ($mac);
+	$args += " --shimmac='$mac' ";
+	$args += " --shimip='$ip' " if ($ip);
+	$args += " --shimhostname='$hostname' " if ($hostname);
+	$args += " --vlan='$vlan' " if ($vlan);
+	print qq(running /root/shim.pl $args\n);
 	unless ( my $pid = fork ) {
-#		@shimlog = `/root/shim.pl --shimmac='$mac' 2>&1`;
-#		open(FD,'>',"/tmp/shimlog-$mac");
-#		print FD @shimlog;
-#		close(FD);
-		$shimlog = '/tmp/shimlog-' . $mac;
+		$shimlog = '/var/run/autoshimlog-' . $mac;
 		$shimlog =~ s/://g;
-		exec("/root/shim.pl --shimmac='$mac' > $shimlog 2>&1");
+		exec("/root/shim.pl $args > $shimlog 2>&1");
 		exit 0;
 	}
 }

@@ -1,0 +1,141 @@
+#!/bin/bash 
+# 20150921 Kirby
+
+# LICENSE
+#
+#    This program is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, either version 3 of the License, or
+#    (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+gotofail() {
+	echo "FAILURE: $*"
+	exit 1
+}
+which dialog >/dev/null 2>&1 || gotofail "You must install dialog"
+which screen >/dev/null 2>&1 || gotofail "You must install dialog"
+[[ -x /root/shim.pl ]] || gotofail "You must install dialog"
+[[ -x /root/dhcptail.pl ]] || gotofail "You must install dialog"
+
+
+main_menu() {
+    /usr/bin/dialog --ascii-lines  --clear --no-cancel\
+    --backtitle "Shim.pl" \
+    --title " Main Menu" \
+    --menu "Menu" 15 50 0 \
+    DHCPsniff "Start DHCPsniff and auto-shim" \
+    StopDHCPsniff "Stop DHCPsniff and stop auto-shim" \
+    ShowShims "Show current shims" \
+    MimicDevice "Mimic a shimmed device" \
+    Exit "" 2> /tmp/shimui.out
+}
+
+
+showshims_menu() {
+    /usr/bin/dialog --ascii-lines --no-cancel \
+    --title "Current Shims" \
+    --textbox /tmp/shims 0 -1  2>&1
+}
+
+stopdhcpsniff_menu() {
+    which pkill >/dev/null 2>&1
+    if [ $? != 0 ]; then
+        /usr/bin/dialog --ascii-lines \
+        --title "FAILURE" \
+        --msgbox "You do not have pkill installed" 0 0
+        return 0
+    fi
+    pkill dhcptail
+    /usr/bin/dialog --ascii-lines \
+    --title "SUCCESS" \
+    --msgbox "dhcptail has been killed" 0 0
+}
+
+dhcpsniff_menu() {
+    which screen >/dev/null 2>&1
+    if [ $? != 0 ]; then
+        /usr/bin/dialog --ascii-lines \
+        --title "FAILURE" \
+        --msgbox "You do not have screen installed" 0 0
+        return 0
+    fi
+    screen -ls dhcptail |grep "There is a screen on" >/dev/null 2>&1
+    if [ $? == 0 ]; then
+        /usr/bin/dialog --ascii-lines \
+        --title "FAILURE" \
+        --msgbox "You are already running dhcptail\n\
+You can view it via screen -dr dhcptail" 0 0
+        return 0
+    fi
+    screen -dmS dhcptail "/root/dhcptail.pl"
+    /usr/bin/dialog --ascii-lines \
+    --title "SUCCESS" \
+    --msgbox "dhcptail was started in a screen session\n\
+You can view it via screen -dr dhcptail" 0 0
+
+}
+
+mimic_menu() {
+    /root/shim.pl --showshims |awk '/SHIMNS: / {print $2}' > /tmp/shims
+    shims=""
+    for i in $(cat /tmp/shims); do
+        shims="$shims $i ."
+    done
+    /usr/bin/dialog --ascii-lines \
+    --title "Mimic" \
+    --menu "Menu" 15 50 0 \
+    $shims  2>/tmp/shimui.out
+
+    mimic=$(cat /tmp/shimui.out && rm /tmp/shimui.out >/dev/null 2>&1)
+    if [ X$mimic == "X" ]; then
+        return 0
+    fi
+    /root/shim.pl --mimic=$mimic
+    if [ $? == 0 ]; then
+        /usr/bin/dialog --ascii-lines \
+        --title "Success" \
+        --msgbox "Success" 0 0
+    else
+        /usr/bin/dialog --ascii-lines \
+        --title "FAILURE" \
+        --msgbox "FAILURE" 0 0
+    fi
+}
+
+# Display main menu
+main_menu
+
+while :; do
+    case $(cat /tmp/shimui.out && rm /tmp/shimui.out >/dev/null 2>&1) in
+        "DHCPsniff")
+            dhcpsniff_menu
+            ;;
+        "StopDHCPsniff")
+            stopdhcpsniff_menu
+            ;;
+        "ShowShims")
+            /root/shim.pl --showshims > /tmp/shims
+            showshims_menu
+            ;;
+        "MimicDevice")
+            mimic_menu
+            ;;
+        *)
+            clear
+            exit 0
+            ;;
+    esac
+
+    main_menu
+done
+
+
+
