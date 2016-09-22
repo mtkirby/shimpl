@@ -1,3 +1,9 @@
+
+
+
+THIS SOFTWARE IS DEPRECATED.   PLEASE USE SLIMSHIM INSTEAD.
+
+
 Documentation is available at https://mkirby.org/mkblog/?p=328
 
 QUICK OVERVIEW/TL;DR
